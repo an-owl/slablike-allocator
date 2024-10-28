@@ -33,12 +33,19 @@ struct SlabMetadata<T, const SLAB_SIZE: usize> where [(); size_of::<T>()/SLAB_SI
 
 impl<T,const SLAB_SIZE: usize> SlabMetadata<T,SLAB_SIZE> {
     const fn new() -> Self {
-        Self {
+        let r = Self {
             next: None,
             prev: None,
 
-            bitmap: [BitmapElement::new(0); (size_of::<T>()/SLAB_SIZE) / size_of::<BitmapElement>()],
+            bitmap: [BitmapElement::new(0); SLAB_SIZE / (size_of::<BitmapElement>() * 8)],
+        };
+
+        // todo optimize this
+        for i in Self::reserved_bits() {
+            r.set_bit(i, true);
         }
+
+        r
     }
 
     /// Returns the number of elements required to store `self` within a slab.
