@@ -46,7 +46,7 @@ impl<T,const SLAB_SIZE: usize> SlabMetadata<T,SLAB_SIZE> {
     /// When accessing the bitmap in `self` `Self::meta_size_elements()` should be ignored.
     ///
     /// This will never return `0`
-    const fn meta_size_elements() -> usize {
+    const fn reserved_bits() -> usize {
         size_of::<Self>().div_ceil(calc_obj_size::<T>())
     }
 
@@ -58,7 +58,7 @@ impl<T,const SLAB_SIZE: usize> SlabMetadata<T,SLAB_SIZE> {
 
         // Skips elements which should not be checked because they are never free.as
         //
-        let first_element = Self::meta_size_elements() / size_of::<BitmapElement>();
+        let first_element = Self::reserved_bits() / size_of::<BitmapElement>();
 
         let mut obj_elem = None;
 
