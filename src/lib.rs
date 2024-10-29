@@ -20,7 +20,8 @@ struct Slab<T, const SLAB_SIZE: usize> where [(); meta_bitmap_size::<T, SLAB_SIZ
 }
 
 const fn meta_bitmap_size<T, const SLAB_SIZE: usize>() -> usize {
-    (size_of::<T>()/SLAB_SIZE) / (size_of::<BitmapElement>() * 8)
+    assert!(SLAB_SIZE >= size_of::<T>() * 2);
+    (SLAB_SIZE/size_of::<T>()).div_ceil(size_of::<BitmapElement>() * 8)
 }
 
 struct SlabMetadata<T, const SLAB_SIZE: usize> where [(); meta_bitmap_size::<T, SLAB_SIZE>()]: {
@@ -154,8 +155,8 @@ mod tests {
 
     }
 
-    // We don't really need this, it's just here to assert that the required components of
-    // `generic_const_exprs` is working correctly.
+    /// We don't really need this, it's just here to assert that the required components of
+    /// `generic_const_exprs` are working correctly.
     #[test]
     fn correct_const_size_of() {
         struct TestStruct<T> where [(); size_of::<T>()]: {
@@ -173,6 +174,29 @@ mod tests {
         assert_eq!(new::<u8>()._p.len(), 1);
         assert_eq!(new::<[u8;6]>()._p.len(), 6);
         assert_eq!(new::<NonNull<usize>>()._p.len(), 8);
+    }
+
+    #[test]
+    fn test_meta_bitmap_size() {
+        assert_eq!(meta_bitmap_size::<u8,2>(),1);
+        assert_eq!(meta_bitmap_size::<u8,8>(),1);
+        assert_eq!(meta_bitmap_size::<u8,16>(),2);
+        assert_eq!(meta_bitmap_size::<u8,32>(),4);
+        assert_eq!(meta_bitmap_size::<u64,16>(),1);
+    }
+
+    #[test]
+    #[should_panic]
+    /// Slab must contain at least 2 object-elements.
+    /// <u8,1> only contains one element
+    fn test_bad_meta_value() {
+        meta_bitmap_size::<u8,1>();
+    }
+
+    #[test]
+    fn test_metadata_geom() {
+        let meta = SlabMetadata::<u128,4096>::new();
+        assert_eq!(meta.bitmap.len() * size_of::<BitmapElement>() * 8, 256); // `len * size_of * 8` gets number of obj_elements
     }
 
 }
