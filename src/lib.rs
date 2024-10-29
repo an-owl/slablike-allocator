@@ -7,20 +7,23 @@ use core::sync::atomic;
 
 type BitmapElement = atomic::AtomicU8;
 
-pub struct SlabLike<A: core::alloc::Allocator, T, const SLAB_SIZE: usize> {
+pub struct SlabLike<A: core::alloc::Allocator, T, const SLAB_SIZE: usize> where [(); meta_bitmap_size::<T, SLAB_SIZE>()]: {
     alloc: A,
     head: Option<NonNull<Slab<T, SLAB_SIZE>>>,
 }
 
 #[repr(C)]
-struct Slab<T, const SLAB_SIZE: usize> {
+struct Slab<T, const SLAB_SIZE: usize> where [(); meta_bitmap_size::<T, SLAB_SIZE>()]: {
     slab_metadata: SlabMetadata<T, SLAB_SIZE>,
 
 
 }
 
-#[repr(packed)]
-struct SlabMetadata<T, const SLAB_SIZE: usize> where [(); size_of::<T>()/SLAB_SIZE]:  {
+const fn meta_bitmap_size<T, const SLAB_SIZE: usize>() -> usize {
+    (size_of::<T>()/SLAB_SIZE) / (size_of::<BitmapElement>() * 8)
+}
+
+struct SlabMetadata<T, const SLAB_SIZE: usize> where [(); meta_bitmap_size::<T, SLAB_SIZE>()]: {
     next: Option<NonNull<Slab<T, SLAB_SIZE>>>,
     prev: Option<NonNull<Slab<T, SLAB_SIZE>>>,
 
@@ -28,20 +31,20 @@ struct SlabMetadata<T, const SLAB_SIZE: usize> where [(); size_of::<T>()/SLAB_SI
     // Larger types have higher space and lower time complexity
     // The first bit in the first element is a lock bit. This bit would otherwise indicate the element `self` is stored in
     // For `1..Self::meta_size_elements()` bits should be set to `1`
-    bitmap: [BitmapElement; (size_of::<T>()/SLAB_SIZE) / size_of::<BitmapElement>()],
+    bitmap: [BitmapElement; meta_bitmap_size::<T, SLAB_SIZE>()],
 }
 
-impl<T,const SLAB_SIZE: usize> SlabMetadata<T,SLAB_SIZE> {
-    const fn new() -> Self {
-        let r = Self {
+impl<T,const SLAB_SIZE: usize> SlabMetadata<T,SLAB_SIZE> where [(); meta_bitmap_size::<T, SLAB_SIZE>()]: {
+    fn new() -> Self where [(); meta_bitmap_size::<T, SLAB_SIZE>()]:{
+        let r = Self  {
             next: None,
             prev: None,
 
-            bitmap: [BitmapElement::new(0); SLAB_SIZE / (size_of::<BitmapElement>() * 8)],
+            bitmap: [const { BitmapElement::new(0) }; meta_bitmap_size::<T, SLAB_SIZE>()],
         };
 
         // todo optimize this
-        for i in Self::reserved_bits() {
+        for i in 0..Self::reserved_bits() {
             r.set_bit(i, true);
         }
 
