@@ -163,6 +163,13 @@ where
     fn prev_slab(&mut self) -> Option<&mut Self> {
         Some(unsafe { &mut *self.slab_metadata.prev_slab()? })
     }
+
+    fn set_next(&mut self, slab: Option<&mut Self>) {
+        self.slab_metadata.set_next(slab.map(|p| p as *mut _));
+    }
+    fn set_prev(&mut self, slab: Option<&mut Self>) {
+        self.slab_metadata.set_prev(slab.map(|p| p as *mut _));
+    }
 }
 
 #[cfg(test)]

@@ -131,6 +131,22 @@ where
         let t = self.next?;
         Some(t.as_ptr())
     }
+
+    pub(crate) fn set_prev(&mut self, prev: Option<*mut Slab<T, SLAB_SIZE>>) {
+        if let Some(prev) = prev {
+            self.prev = Some(NonNull::new(prev).unwrap());
+        } else {
+            self.prev = None
+        }
+    }
+
+    pub(crate) fn set_next(&mut self, next: Option<*mut Slab<T, SLAB_SIZE>>) {
+        if let Some(next) = next {
+            self.next = Some(NonNull::new(next).unwrap());
+        } else {
+            self.next = None
+        }
+    }
 }
 
 const fn calc_obj_size<T>() -> usize {
