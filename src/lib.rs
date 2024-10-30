@@ -36,7 +36,25 @@ where
     [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
 {
     alloc: A,
+
     head: Option<NonNull<Slab<T, SLAB_SIZE>>>,
+    tail: Option<NonNull<Slab<T, SLAB_SIZE>>>,
+    cursor: Option<NonNull<Slab<T, SLAB_SIZE>>>,
+}
+
+impl<A: core::alloc::Allocator, T, const SLAB_SIZE: usize> SlabLike<A, T, SLAB_SIZE>
+where
+    [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+    [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
+{
+    pub const fn new(alloc: A) -> Self {
+        Self {
+            alloc,
+            head: None,
+            tail: None,
+            cursor: None,
+        }
+    }
 }
 
 /// Returns the number of object elements that can be stored in a [Slab]
