@@ -1,32 +1,51 @@
+use crate::UntypedSlab;
+use core::alloc;
 use core::ptr::NonNull;
 use core::sync::atomic;
-use crate::Slab;
 
 type BitmapElement = atomic::AtomicU8;
 
-pub(crate) const fn meta_bitmap_size<T, const SLAB_SIZE: usize>() -> usize {
-    assert!(SLAB_SIZE >= size_of::<T>() * 2);
-    (SLAB_SIZE/size_of::<T>()).div_ceil(size_of::<BitmapElement>() * 8)
+pub const fn meta_bitmap_size<T>(slab_size: usize) -> usize {
+    assert!(slab_size >= size_of::<T>() * 2);
+    (slab_size / size_of::<T>()).div_ceil(size_of::<BitmapElement>() * 8)
 }
 
-pub(crate) struct SlabMetadata<T, const SLAB_SIZE: usize> where [(); meta_bitmap_size::<T, SLAB_SIZE>()]: {
-    next: Option<NonNull<Slab<T, SLAB_SIZE>>>,
-    prev: Option<NonNull<Slab<T, SLAB_SIZE>>>,
+pub(crate) fn size_of_meta<T>(slab_size: usize) -> usize {
+    const META_ALIGN: usize = 8;
+    let size = (META_ALIGN * 2) + meta_bitmap_size::<T>(slab_size);
+
+    let layout = alloc::Layout::from_size_align(size, META_ALIGN).unwrap();
+    layout.pad_to_align().size()
+}
+
+#[repr(C)]
+pub(crate) struct SlabMetadata<T, const SLAB_SIZE: usize>
+where
+    [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+{
+    next: Option<NonNull<UntypedSlab<T, SLAB_SIZE>>>,
+    prev: Option<NonNull<UntypedSlab<T, SLAB_SIZE>>>,
 
     // Array element type here is a trade between time and space complexity.
     // Larger types have higher space and lower time complexity
     // The first bit in the first element is a lock bit. This bit would otherwise indicate the element `self` is stored in
     // For `1..Self::meta_size_elements()` bits should be set to `1`
-    bitmap: [BitmapElement; meta_bitmap_size::<T, SLAB_SIZE>()],
+    bitmap: [BitmapElement; meta_bitmap_size::<T>(SLAB_SIZE)],
 }
 
-impl<T,const SLAB_SIZE: usize> SlabMetadata<T,SLAB_SIZE> where [(); meta_bitmap_size::<T, SLAB_SIZE>()]: {
-    fn new() -> Self where [(); meta_bitmap_size::<T, SLAB_SIZE>()]:{
-        let r = Self  {
+impl<T, const SLAB_SIZE: usize> SlabMetadata<T, SLAB_SIZE>
+where
+    [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+{
+    pub(crate) fn new() -> Self
+    where
+        [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+    {
+        let r = Self {
             next: None,
             prev: None,
 
-            bitmap: [const { BitmapElement::new(0) }; meta_bitmap_size::<T, SLAB_SIZE>()],
+            bitmap: [const { BitmapElement::new(0) }; meta_bitmap_size::<T>(SLAB_SIZE)],
         };
 
         // todo optimize this
@@ -121,7 +140,7 @@ mod tests {
 
         #[repr(align(64))]
         struct TestAlign {
-            _i: u8
+            _i: u8,
         }
 
         assert_eq!(calc_obj_size::<TestAlign>(), 64);
@@ -137,19 +156,24 @@ mod tests {
         struct TestAlign3;
 
         assert_eq!(calc_obj_size::<TestAlign3>(), 0)
-
     }
 
     /// We don't really need this, it's just here to assert that the required components of
     /// `generic_const_exprs` are working correctly.
     #[test]
     fn correct_const_size_of() {
-        struct TestStruct<T> where [(); size_of::<T>()]: {
+        struct TestStruct<T>
+        where
+            [(); size_of::<T>()]:,
+        {
             _p: [bool; size_of::<T>()],
             _phantom: core::marker::PhantomData<T>,
         }
 
-        fn new<T>() -> TestStruct<T> where [(); size_of::<T>()]: {
+        fn new<T>() -> TestStruct<T>
+        where
+            [(); size_of::<T>()]:,
+        {
             TestStruct {
                 _p: [false; size_of::<T>()],
                 _phantom: Default::default(),
@@ -157,17 +181,17 @@ mod tests {
         }
 
         assert_eq!(new::<u8>()._p.len(), 1);
-        assert_eq!(new::<[u8;6]>()._p.len(), 6);
+        assert_eq!(new::<[u8; 6]>()._p.len(), 6);
         assert_eq!(new::<NonNull<usize>>()._p.len(), 8);
     }
 
     #[test]
     fn test_meta_bitmap_size() {
-        assert_eq!(meta_bitmap_size::<u8,2>(),1);
-        assert_eq!(meta_bitmap_size::<u8,8>(),1);
-        assert_eq!(meta_bitmap_size::<u8,16>(),2);
-        assert_eq!(meta_bitmap_size::<u8,32>(),4);
-        assert_eq!(meta_bitmap_size::<u64,16>(),1);
+        assert_eq!(meta_bitmap_size::<u8>(2), 1);
+        assert_eq!(meta_bitmap_size::<u8>(8), 1);
+        assert_eq!(meta_bitmap_size::<u8>(16), 2);
+        assert_eq!(meta_bitmap_size::<u8>(32), 4);
+        assert_eq!(meta_bitmap_size::<u64>(16), 1);
     }
 
     #[test]
@@ -175,13 +199,30 @@ mod tests {
     /// Slab must contain at least 2 object-elements.
     /// <u8,1> only contains one element
     fn test_bad_meta_value() {
-        meta_bitmap_size::<u8,1>();
+        meta_bitmap_size::<u8>(1);
     }
 
     #[test]
     fn test_metadata_geom() {
-        let meta = SlabMetadata::<u128,4096>::new();
+        let meta = SlabMetadata::<u128, 4096>::new();
         assert_eq!(meta.bitmap.len() * size_of::<BitmapElement>() * 8, 256); // `len * size_of * 8` gets number of obj_elements
     }
 
+    #[test]
+    fn test_manual_sizing() {
+        macro_rules! assert_meta_size {
+            ($ty:path,$ss:literal) => {
+                assert_eq!(
+                    size_of_meta::<$ty>($ss),
+                    size_of::<SlabMetadata<$ty, $ss>>()
+                );
+            };
+        }
+
+        assert_eq!(align_of::<SlabMetadata<u8, 16>>(), 8);
+        assert_meta_size!(u8, 16);
+        assert_meta_size!(u8, 32);
+        assert_meta_size!(u8, 64);
+        assert_meta_size!(u128, 128);
+    }
 }
