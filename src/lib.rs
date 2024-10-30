@@ -55,6 +55,51 @@ where
             cursor: None,
         }
     }
+
+    /// Allocates a new slab, appends it to the end of the linked list
+    fn new_slab(&mut self) -> Result<(), AllocError> {
+        let ptr = self.alloc.allocate(Layout::new::<Slab<T, SLAB_SIZE>>())?;
+        let n_slab: &mut Slab<T, SLAB_SIZE> = unsafe { &mut *ptr.as_ptr().cast() };
+
+        // First slab, initialize all pointers
+        if self.head.is_none() {
+            self.head = Some(NonNull::from(n_slab));
+            self.tail = Some(NonNull::from(n_slab));
+            self.cursor = Some(NonNull::from(n_slab));
+            return Ok(());
+        }
+
+        self.tail
+    }
+
+    /// Returns a reference to the last slab owned by self.
+    fn tail(&mut self) -> Option<&mut Slab<T, SLAB_SIZE>> {
+        Some(unsafe { &mut *self.tail?.as_ptr() })
+    }
+
+    /// Returns a reference to the first slab owned by self
+    fn head(&mut self) -> Option<&mut Slab<T, SLAB_SIZE>> {
+        Some(unsafe { &mut *self.head?.as_ptr() })
+    }
+
+    /// Returns a reference to the slab pointed at by the cursor.
+    fn cursor(&mut self) -> Option<&mut Slab<T, SLAB_SIZE>> {
+        Some(unsafe { &mut *self.cursor?.as_ptr() })
+    }
+}
+
+unsafe impl<A: core::alloc::Allocator, T, const SLAB_SIZE: usize> core::alloc::Allocator
+    for SlabLike<A, T, SLAB_SIZE>
+{
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        assert_eq!(
+            layout,
+            Layout::new::<T>(),
+            "Unexpected layout for {}: {layout:?}, expected {:?}",
+            core::any::type_name::<Self>(),
+            Layout::new::<T>()
+        );
+    }
 }
 
 /// Returns the number of object elements that can be stored in a [Slab]
@@ -101,6 +146,14 @@ where
             obj_elements: [const { core::mem::MaybeUninit::uninit() };
                 slab_count_obj_elements::<T, SLAB_SIZE>()],
         }
+    }
+
+    fn alloc(&mut self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        debug_assert_eq!(layout, Layout::new::<T>());
+        let t = self.slab_metadata.alloc().ok_or(AllocError)?;
+        let u = &mut self.obj_elements[t] as *mut T;
+        // SAFETY: Pointer is taken from a reference
+        Ok(unsafe { NonNull::new_unchecked(u.cast()) })
     }
 }
 

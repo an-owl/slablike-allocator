@@ -77,7 +77,7 @@ where
     }
 
     /// Attempts to Allocate an object, returns its slab index.
-    fn alloc(&self) -> Option<usize> {
+    pub fn alloc(&self) -> Option<usize> {
         while self.bitmap[0].fetch_or(1, atomic::Ordering::Acquire) | 1 == 0 {
             core::hint::spin_loop();
         }
