@@ -10,12 +10,17 @@ pub const fn meta_bitmap_size<T>(slab_size: usize) -> usize {
     (slab_size / size_of::<T>()).div_ceil(size_of::<BitmapElement>() * 8)
 }
 
-pub(crate) fn size_of_meta<T>(slab_size: usize) -> usize {
+pub(crate) const fn size_of_meta<T>(slab_size: usize) -> usize {
     const META_ALIGN: usize = 8;
     let size = (META_ALIGN * 2) + meta_bitmap_size::<T>(slab_size);
 
-    let layout = alloc::Layout::from_size_align(size, META_ALIGN).unwrap();
-    layout.pad_to_align().size()
+    let t = if size & META_ALIGN - 1 != 0 {
+        (size & !(META_ALIGN - 1)) + META_ALIGN
+    } else {
+        size
+    };
+
+    t
 }
 
 #[repr(C)]
