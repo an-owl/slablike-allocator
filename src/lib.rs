@@ -3,6 +3,26 @@
 #![feature(generic_const_exprs)]
 #![allow(incomplete_features)]
 
+//! The slab-like allocator works using a method inspired by a SLAB allocator.
+//! It uses regions of memory of `SLAB_SIZE` bytes divided up into object elements.
+//! Each region (slab) is located using a self-contained doubly-linked list. The head contains a
+//! pointer to the first and last slab, as a doubly linked list normally would.
+//! However, it also maintains a cursor into a slab which will be used to allocate memory from next.
+//!
+//! Each slab is divided into object-elements (OE), and metadata. The metadata is allocated into the
+//! first object elements within the slab. The metadata contains pointers to the previous and next
+//! slabs and a free list.
+//! The free list is a bitmap of OE, because the metadata struct is allocated to at
+//! least one OE the first bit is used as a lock bit. To locate a free OE the leading ones
+//! are counted until a zero is found, which is set to one and the lock bit is cleared.
+//!
+//! If a slab is full the cursor will be moved to the next slab and which will be searched for a free OE.
+//! Using this method full slabs will be moved "before" the cursor and empty slabs are after it reducing seek times.
+//! If no free slabs are available then one will be allocated from the given allocator.
+//!
+//! The list can be sorted, this look back and move all slabs which aren't full ahead of the cursor.
+//! Slabs ahead of the cursor are guaranteed to have free space so these do not need to be checked.
+
 mod slab_meta;
 
 use core::ptr::NonNull;
