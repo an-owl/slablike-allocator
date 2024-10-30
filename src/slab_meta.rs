@@ -1,3 +1,4 @@
+use super::Slab;
 use core::ptr::NonNull;
 use core::sync::atomic;
 
@@ -119,6 +120,16 @@ where
         let bit = 1 << index % size_of::<BitmapElement>() * 8;
 
         self.bitmap[byte].load(atomic::Ordering::Relaxed) & bit != 0
+    }
+
+    pub(crate) fn prev_slab(&self) -> Option<*mut Slab<T, SLAB_SIZE>> {
+        let t = self.prev?;
+        Some(t.as_ptr())
+    }
+
+    pub(crate) fn next_slab(&self) -> Option<*mut Slab<T, SLAB_SIZE>> {
+        let t = self.next?;
+        Some(t.as_ptr())
     }
 }
 

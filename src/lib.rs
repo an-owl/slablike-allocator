@@ -155,6 +155,14 @@ where
         // SAFETY: Pointer is taken from a reference
         Ok(unsafe { NonNull::new_unchecked(u.cast()) })
     }
+
+    fn next_slab(&mut self) -> Option<&mut Self> {
+        Some(unsafe { &mut *self.slab_metadata.next_slab()? })
+    }
+
+    fn prev_slab(&mut self) -> Option<&mut Self> {
+        Some(unsafe { &mut *self.slab_metadata.prev_slab()? })
+    }
 }
 
 #[cfg(test)]
