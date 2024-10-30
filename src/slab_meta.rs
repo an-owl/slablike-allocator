@@ -1,5 +1,3 @@
-use crate::UntypedSlab;
-use core::alloc;
 use core::ptr::NonNull;
 use core::sync::atomic;
 
@@ -10,6 +8,11 @@ pub const fn meta_bitmap_size<T>(slab_size: usize) -> usize {
     (slab_size / size_of::<T>()).div_ceil(size_of::<BitmapElement>() * 8)
 }
 
+/// Returns the size of a `SlabMeta<T,slab_size>`.
+///
+/// This is required because the `generic_const_exprs` feature is buggy, specifically it is
+/// required because the compiler cant resolve `size_of<SlabMetadata<T,_>` in while trying to
+/// resolve another const bound. This prevents needing to resolve `size_of<SlabMetadata<T,_>`.
 pub(crate) const fn size_of_meta<T>(slab_size: usize) -> usize {
     const META_ALIGN: usize = 8;
     let size = (META_ALIGN * 2) + meta_bitmap_size::<T>(slab_size);
@@ -27,9 +30,10 @@ pub(crate) const fn size_of_meta<T>(slab_size: usize) -> usize {
 pub(crate) struct SlabMetadata<T, const SLAB_SIZE: usize>
 where
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+    [(); super::slab_count_obj_elements::<T, SLAB_SIZE>()]:,
 {
-    next: Option<NonNull<UntypedSlab<T, SLAB_SIZE>>>,
-    prev: Option<NonNull<UntypedSlab<T, SLAB_SIZE>>>,
+    next: Option<NonNull<super::Slab<T, SLAB_SIZE>>>,
+    prev: Option<NonNull<super::Slab<T, SLAB_SIZE>>>,
 
     // Array element type here is a trade between time and space complexity.
     // Larger types have higher space and lower time complexity
@@ -41,10 +45,12 @@ where
 impl<T, const SLAB_SIZE: usize> SlabMetadata<T, SLAB_SIZE>
 where
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+    [(); super::slab_count_obj_elements::<T, SLAB_SIZE>()]:,
 {
     pub(crate) fn new() -> Self
     where
         [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+        [(); super::slab_count_obj_elements::<T, SLAB_SIZE>()]:,
     {
         let r = Self {
             next: None,
