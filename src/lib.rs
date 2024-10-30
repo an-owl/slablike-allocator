@@ -14,7 +14,7 @@
 //! slabs and a free list.
 //! The free list is a bitmap of OE, because the metadata struct is allocated to at
 //! least one OE the first bit is used as a lock bit. To locate a free OE the leading ones
-//! are counted until a zero is found, which is set to one and the lock bit is cleared.
+//! will be counted until a zero is found, which is set to one and the lock bit is cleared.
 //!
 //! If a slab is full the cursor will be moved to the next slab and which will be searched for a free OE.
 //! Using this method full slabs will be moved "before" the cursor and empty slabs are after it reducing seek times.
