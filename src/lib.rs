@@ -37,9 +37,10 @@ where
 {
     alloc: A,
 
-    head: Option<NonNull<Slab<T, SLAB_SIZE>>>,
-    tail: Option<NonNull<Slab<T, SLAB_SIZE>>>,
-    cursor: Option<NonNull<Slab<T, SLAB_SIZE>>>,
+    // Head and tail must always be the same variant
+    head: core::sync::atomic::AtomicPtr<Slab<T, SLAB_SIZE>>,
+    tail: core::sync::atomic::AtomicPtr<Slab<T, SLAB_SIZE>>,
+    cursor: core::sync::atomic::AtomicPtr<Slab<T, SLAB_SIZE>>,
 }
 
 impl<A: core::alloc::Allocator, T, const SLAB_SIZE: usize> SlabLike<A, T, SLAB_SIZE>
@@ -50,9 +51,9 @@ where
     pub const fn new(alloc: A) -> Self {
         Self {
             alloc,
-            head: None,
-            tail: None,
-            cursor: None,
+            head: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+            tail: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+            cursor: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
         }
     }
 
@@ -61,30 +62,55 @@ where
         let ptr = self.alloc.allocate(Layout::new::<Slab<T, SLAB_SIZE>>())?;
         let n_slab: &mut Slab<T, SLAB_SIZE> = unsafe { &mut *ptr.as_ptr().cast() };
 
-        // First slab, initialize all pointers
+        // Only slab, initialize all pointers
         if self.head.is_none() {
-            self.head = Some(NonNull::from(n_slab));
-            self.tail = Some(NonNull::from(n_slab));
-            self.cursor = Some(NonNull::from(n_slab));
-            return Ok(());
+            self.head.store(
+                Some(NonNull::from(n_slab)),
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            self.tail.store(
+                Some(NonNull::from(n_slab)),
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            self.cursor.store(
+                Some(NonNull::from(n_slab)),
+                core::sync::atomic::Ordering::Relaxed,
+            );
+        } else {
+            let tail = self.tail().expect("Tail not initialized");
+            debug_assert!(tail.set_next(Some(n_slab)).is_none());
         }
-
-        self.tail
+        Ok(())
     }
 
     /// Returns a reference to the last slab owned by self.
-    fn tail(&mut self) -> Option<&mut Slab<T, SLAB_SIZE>> {
-        Some(unsafe { &mut *self.tail?.as_ptr() })
+    fn tail(&self) -> Option<&mut Slab<T, SLAB_SIZE>> {
+        let t = self.tail.load(core::sync::atomic::Ordering::Relaxed);
+        if t.is_null() {
+            None
+        } else {
+            Some(unsafe { &mut *t })
+        }
     }
 
     /// Returns a reference to the first slab owned by self
-    fn head(&mut self) -> Option<&mut Slab<T, SLAB_SIZE>> {
-        Some(unsafe { &mut *self.head?.as_ptr() })
+    fn head(&self) -> Option<&mut Slab<T, SLAB_SIZE>> {
+        let t = self.head.load(core::sync::atomic::Ordering::Relaxed);
+        if t.is_null() {
+            None
+        } else {
+            Some(unsafe { &mut *t })
+        }
     }
 
     /// Returns a reference to the slab pointed at by the cursor.
-    fn cursor(&mut self) -> Option<&mut Slab<T, SLAB_SIZE>> {
-        Some(unsafe { &mut *self.cursor?.as_ptr() })
+    fn cursor(&self) -> Option<&mut Slab<T, SLAB_SIZE>> {
+        let t = self.cursor.load(core::sync::atomic::Ordering::Relaxed);
+        if t.is_null() {
+            None
+        } else {
+            Some(unsafe { &mut *t })
+        }
     }
 }
 
@@ -99,6 +125,8 @@ unsafe impl<A: core::alloc::Allocator, T, const SLAB_SIZE: usize> core::alloc::A
             core::any::type_name::<Self>(),
             Layout::new::<T>()
         );
+
+        if let Some(cur_slab) = self.cursor() {}
     }
 }
 
@@ -156,19 +184,23 @@ where
         Ok(unsafe { NonNull::new_unchecked(u.cast()) })
     }
 
-    fn next_slab(&mut self) -> Option<&mut Self> {
+    fn next_slab(&self) -> Option<&mut Self> {
         Some(unsafe { &mut *self.slab_metadata.next_slab()? })
     }
 
-    fn prev_slab(&mut self) -> Option<&mut Self> {
+    fn prev_slab(&self) -> Option<&mut Self> {
         Some(unsafe { &mut *self.slab_metadata.prev_slab()? })
     }
 
-    fn set_next(&mut self, slab: Option<&mut Self>) {
-        self.slab_metadata.set_next(slab.map(|p| p as *mut _));
+    fn set_next(&self, slab: Option<&mut Self>) -> Option<&mut Self> {
+        self.slab_metadata
+            .set_next(slab.map(|p| p as *mut _))
+            .map(|p| unsafe { &mut *p })
     }
-    fn set_prev(&mut self, slab: Option<&mut Self>) {
-        self.slab_metadata.set_prev(slab.map(|p| p as *mut _));
+    fn set_prev(&self, slab: Option<&mut Self>) -> Option<&mut Self> {
+        self.slab_metadata
+            .set_prev(slab.map(|p| p as *mut _))
+            .map(|p| unsafe { &mut *p })
     }
 }
 

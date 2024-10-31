@@ -33,8 +33,8 @@ where
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
     [(); super::slab_count_obj_elements::<T, SLAB_SIZE>()]:,
 {
-    next: Option<NonNull<super::Slab<T, SLAB_SIZE>>>,
-    prev: Option<NonNull<super::Slab<T, SLAB_SIZE>>>,
+    next: atomic::AtomicPtr<Slab<T, SLAB_SIZE>>,
+    prev: atomic::AtomicPtr<Slab<T, SLAB_SIZE>>,
 
     // Array element type here is a trade between time and space complexity.
     // Larger types have higher space and lower time complexity
@@ -54,8 +54,8 @@ where
         [(); super::slab_count_obj_elements::<T, SLAB_SIZE>()]:,
     {
         let r = Self {
-            next: None,
-            prev: None,
+            next: atomic::AtomicPtr::new(core::ptr::null_mut()),
+            prev: atomic::AtomicPtr::new(core::ptr::null_mut()),
 
             bitmap: [const { BitmapElement::new(0) }; meta_bitmap_size::<T>(SLAB_SIZE)],
         };
@@ -123,28 +123,57 @@ where
     }
 
     pub(crate) fn prev_slab(&self) -> Option<*mut Slab<T, SLAB_SIZE>> {
-        let t = self.prev?;
-        Some(t.as_ptr())
-    }
-
-    pub(crate) fn next_slab(&self) -> Option<*mut Slab<T, SLAB_SIZE>> {
-        let t = self.next?;
-        Some(t.as_ptr())
-    }
-
-    pub(crate) fn set_prev(&mut self, prev: Option<*mut Slab<T, SLAB_SIZE>>) {
-        if let Some(prev) = prev {
-            self.prev = Some(NonNull::new(prev).unwrap());
+        let t = self.prev.load(atomic::Ordering::Relaxed);
+        if t.is_null() {
+            None
         } else {
-            self.prev = None
+            Some(t)
         }
     }
 
-    pub(crate) fn set_next(&mut self, next: Option<*mut Slab<T, SLAB_SIZE>>) {
-        if let Some(next) = next {
-            self.next = Some(NonNull::new(next).unwrap());
+    pub(crate) fn next_slab(&self) -> Option<*mut Slab<T, SLAB_SIZE>> {
+        let t = self.next.load(atomic::Ordering::Relaxed);
+        if t.is_null() {
+            None
         } else {
-            self.next = None
+            Some(t)
+        }
+    }
+
+    /// Replaces the pointer to the previous slab with `next`. Returns the previous value.
+    pub(crate) fn set_prev(
+        &self,
+        prev: Option<*mut Slab<T, SLAB_SIZE>>,
+    ) -> Option<*mut Slab<T, SLAB_SIZE>> {
+        let ret = if let Some(p) = prev {
+            self.prev.swap(p, atomic::Ordering::Relaxed)
+        } else {
+            self.prev
+                .swap(core::ptr::null_mut(), atomic::Ordering::Relaxed)
+        };
+        if ret.is_null() {
+            None
+        } else {
+            Some(ret)
+        }
+    }
+
+    /// Replaces the pointer to the next slab with `next`. Returns the previous value.
+    pub(crate) fn set_next(
+        &self,
+        next: Option<*mut Slab<T, SLAB_SIZE>>,
+    ) -> Option<*mut Slab<T, SLAB_SIZE>> {
+        let ret = if let Some(p) = next {
+            self.next.swap(p, atomic::Ordering::Relaxed)
+        } else {
+            self.next
+                .swap(core::ptr::null_mut(), atomic::Ordering::Relaxed)
+        };
+
+        if ret.is_null() {
+            None
+        } else {
+            Some(ret)
         }
     }
 }
