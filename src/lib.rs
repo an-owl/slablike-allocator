@@ -25,6 +25,7 @@
 
 mod slab_meta;
 
+use core::alloc::{AllocError, Layout};
 use core::ptr::NonNull;
 use slab_meta::SlabMetadata;
 
@@ -36,6 +37,11 @@ where
     [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
 {
     alloc: A,
+
+    // When a thread attempts to allocate memory it must increment the visitors counter.
+    // If the allocation of the current cursor fails
+    visitors: core::sync::atomic::AtomicUsize,
+    lock: core::sync::atomic::AtomicBool,
 
     // Head and tail must always be the same variant
     head: core::sync::atomic::AtomicPtr<Slab<T, SLAB_SIZE>>,
@@ -51,6 +57,8 @@ where
     pub const fn new(alloc: A) -> Self {
         Self {
             alloc,
+            lock: core::sync::atomic::AtomicBool::new(false),
+            visitors: core::sync::atomic::AtomicUsize::new(0),
             head: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
             tail: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
             cursor: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
@@ -59,27 +67,37 @@ where
 
     /// Allocates a new slab, appends it to the end of the linked list
     fn new_slab(&mut self) -> Result<(), AllocError> {
-        let ptr = self.alloc.allocate(Layout::new::<Slab<T, SLAB_SIZE>>())?;
-        let n_slab: &mut Slab<T, SLAB_SIZE> = unsafe { &mut *ptr.as_ptr().cast() };
+        let ptr = self
+            .alloc
+            .allocate(Layout::from_size_align(size_of::<Slab<T, SLAB_SIZE>>(), SLAB_SIZE).unwrap());
+        let n_slab: &mut Slab<T, SLAB_SIZE> = unsafe { &mut *ptr?.as_ptr().cast() };
 
         // Only slab, initialize all pointers
-        if self.head.is_none() {
+        if self
+            .head
+            .load(core::sync::atomic::Ordering::Relaxed)
+            .is_null()
+        {
             self.head.store(
-                Some(NonNull::from(n_slab)),
+                (n_slab as *mut Slab<T, SLAB_SIZE>).cast(),
                 core::sync::atomic::Ordering::Relaxed,
             );
             self.tail.store(
-                Some(NonNull::from(n_slab)),
+                (n_slab as *mut Slab<T, SLAB_SIZE>).cast(),
                 core::sync::atomic::Ordering::Relaxed,
             );
             self.cursor.store(
-                Some(NonNull::from(n_slab)),
+                (n_slab as *mut Slab<T, SLAB_SIZE>).cast(),
                 core::sync::atomic::Ordering::Relaxed,
             );
         } else {
             let tail = self.tail().expect("Tail not initialized");
             debug_assert!(tail.set_next(Some(n_slab)).is_none());
+            tail.set_next(Some(n_slab));
+            self.tail
+                .store(n_slab, core::sync::atomic::Ordering::Relaxed);
         }
+
         Ok(())
     }
 
@@ -176,12 +194,17 @@ where
         }
     }
 
-    fn alloc(&mut self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        debug_assert_eq!(layout, Layout::new::<T>());
+    fn alloc(&mut self) -> Result<NonNull<[u8]>, AllocError> {
         let t = self.slab_metadata.alloc().ok_or(AllocError)?;
-        let u = &mut self.obj_elements[t] as *mut T;
+        let u = &mut self.obj_elements[t] as *mut core::mem::MaybeUninit<T>;
         // SAFETY: Pointer is taken from a reference
-        Ok(unsafe { NonNull::new_unchecked(u.cast()) })
+        Ok(unsafe {
+            NonNull::new_unchecked(core::slice::from_raw_parts_mut(u.cast(), size_of::<T>()))
+        })
+    }
+
+    fn free(&self, index: usize) {
+        self.slab_metadata.set_bit(index, false);
     }
 
     fn next_slab(&self) -> Option<&mut Self> {
@@ -212,5 +235,15 @@ mod tests {
     fn check_slab_size() {
         let slab = Slab::<u128, 64>::new();
         assert_eq!(slab.obj_elements.len(), 2);
+    }
+
+    #[test]
+    fn test_slab_alloc_dealloc() {
+        let mut slab = Slab::<u128, 64>::new();
+        let slab_addr = &slab as *const _ as usize;
+        let first = slab.alloc().unwrap();
+        assert_eq!(first.cast::<u8>().as_ptr() as usize, slab_addr + 32);
+        let second = slab.alloc().unwrap();
+        assert_eq!(second.cast::<u8>().as_ptr() as usize, slab_addr + 48);
     }
 }
