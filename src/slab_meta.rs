@@ -103,7 +103,7 @@ where
     }
 
     /// Sets the value of the requested bit to `value`
-    fn set_bit(&self, index: usize, value: bool) {
+    pub(crate) fn set_bit(&self, index: usize, value: bool) {
         let byte = index / size_of::<BitmapElement>() * 8;
         let bit = 1 << index % size_of::<BitmapElement>() * 8;
 
