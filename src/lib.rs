@@ -130,6 +130,20 @@ where
             Some(unsafe { &mut *t })
         }
     }
+
+    /// Updates the cursor to point to `next`.
+    /// This method should be called when `self.cursor` failed to allocate memory and the visitor count is zero.
+    ///
+    /// # Safety
+    ///
+    /// This method is unsafe because the caller must ensure that `self.lock` is set and there are
+    /// no visitors.
+    unsafe fn advance_cursor(&self, next: &mut Slab<T, SLAB_SIZE>) {
+        debug_assert!(self.lock.load(core::sync::atomic::Ordering::Relaxed));
+        debug_assert_eq!(self.visitors.load(core::sync::atomic::Ordering::Relaxed), 0);
+        self.cursor
+            .store(next, core::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 unsafe impl<A: core::alloc::Allocator, T, const SLAB_SIZE: usize> core::alloc::Allocator
