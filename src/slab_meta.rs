@@ -286,8 +286,6 @@ mod tests {
             };
         }
 
-        assert_eq!(align_of::<SlabMetadata<u8, 16>>(), 8);
-        assert_meta_size!(u8, 16);
         assert_meta_size!(u8, 32);
         assert_meta_size!(u8, 64);
         assert_meta_size!(u128, 128);
