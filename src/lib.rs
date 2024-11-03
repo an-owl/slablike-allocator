@@ -252,7 +252,7 @@ pub const fn slab_count_obj_elements<T, const SLAB_SIZE: usize>() -> usize {
     let raw_obj_elem_count = SLAB_SIZE / elem_size;
 
     let meta_size = slab_meta::size_of_meta::<T>(SLAB_SIZE);
-    let meta_obj_elem_size = meta_size / elem_size;
+    let meta_obj_elem_size = meta_size.div_ceil(elem_size);
 
     let num_obj_elements = raw_obj_elem_count - meta_obj_elem_size;
     assert!(
