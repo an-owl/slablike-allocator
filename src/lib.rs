@@ -148,9 +148,12 @@ where
 
 unsafe impl<A: core::alloc::Allocator, T, const SLAB_SIZE: usize> core::alloc::Allocator
     for SlabLike<A, T, SLAB_SIZE>
+where
+    [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+    [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
 {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        assert_eq!(
+        debug_assert_eq!(
             layout,
             Layout::new::<T>(),
             "Unexpected layout for {}: {layout:?}, expected {:?}",
@@ -158,7 +161,86 @@ unsafe impl<A: core::alloc::Allocator, T, const SLAB_SIZE: usize> core::alloc::A
             Layout::new::<T>()
         );
 
-        if let Some(cur_slab) = self.cursor() {}
+        while self
+            .lock
+            .compare_exchange_weak(
+                false,
+                true,
+                core::sync::atomic::Ordering::Acquire,
+                core::sync::atomic::Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        self.visitors
+            .fetch_add(1, core::sync::atomic::Ordering::Acquire);
+        self.lock
+            .store(false, core::sync::atomic::Ordering::Release);
+
+        let mut dirty = false;
+        let mut slab = self.cursor().ok_or(AllocError)?;
+        let ret = loop {
+            if let Ok(ret) = slab.alloc() {
+                break Ok(ret);
+            } else {
+                dirty = true;
+                slab = slab.next_slab().ok_or(AllocError)?;
+            }
+        };
+
+        while self
+            .lock
+            .compare_exchange_weak(
+                false,
+                true,
+                core::sync::atomic::Ordering::Acquire,
+                core::sync::atomic::Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        if self
+            .visitors
+            .fetch_sub(1, core::sync::atomic::Ordering::Acquire)
+            == 1
+            && dirty
+        {
+            // SAFETY: We have acquired the lock bit, and can assert that the visitor count is 0
+            unsafe { self.advance_cursor(slab) }
+        }
+        self.lock
+            .store(false, core::sync::atomic::Ordering::Release);
+
+        ret
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        debug_assert_eq!(
+            layout,
+            Layout::new::<T>(),
+            "Unexpected layout for {}: {layout:?}, expected {:?}",
+            core::any::type_name::<Self>(),
+            Layout::new::<T>()
+        );
+
+        // This takes `ptr` aligns it down to `SLAB_SIZE` and casts it to Slab
+        // Because `Self` forces alignment of Slabs to `SLAB_SIZE` we can guarantee that this is indeed the pointer into a Slab.
+        let tgt_slab = unsafe {
+            &mut *(((ptr.as_ptr() as usize) & !(SLAB_SIZE - 1)) as *mut Slab<T, SLAB_SIZE>)
+        };
+
+        // offset into array
+        let offset = (ptr.as_ptr() as usize) - ((&tgt_slab.obj_elements) as *const _ as usize);
+        let index = if offset == 0 {
+            0
+        } else {
+            // offset divided by element size, returns element index
+            offset / (tgt_slab.obj_elements.len()) / size_of_val(&tgt_slab.obj_elements)
+        };
+
+        tgt_slab.free(index)
     }
 }
 
