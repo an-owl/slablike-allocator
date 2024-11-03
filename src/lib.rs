@@ -66,11 +66,24 @@ where
     }
 
     /// Allocates a new slab, appends it to the end of the linked list
-    fn new_slab(&mut self) -> Result<(), AllocError> {
+    fn new_slab(&self) -> Result<(), AllocError> {
         let ptr = self
             .alloc
             .allocate(Layout::from_size_align(size_of::<Slab<T, SLAB_SIZE>>(), SLAB_SIZE).unwrap());
         let n_slab: &mut Slab<T, SLAB_SIZE> = unsafe { &mut *ptr?.as_ptr().cast() };
+
+        while self
+            .lock
+            .compare_exchange_weak(
+                false,
+                true,
+                core::sync::atomic::Ordering::Acquire,
+                core::sync::atomic::Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            core::hint::spin_loop()
+        }
 
         // Only slab, initialize all pointers
         if self
@@ -97,6 +110,9 @@ where
             self.tail
                 .store(n_slab, core::sync::atomic::Ordering::Relaxed);
         }
+
+        self.lock
+            .store(false, core::sync::atomic::Ordering::Release);
 
         Ok(())
     }
