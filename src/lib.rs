@@ -195,7 +195,12 @@ where
             .store(false, core::sync::atomic::Ordering::Release);
 
         let mut dirty = false;
-        let mut slab = self.cursor().ok_or(AllocError)?;
+        let mut slab = loop {
+            match self.cursor().ok_or(AllocError) {
+                Ok(slab) => break slab,
+                Err(_) => self.new_slab()?,
+            }
+        };
         let ret = loop {
             if let Ok(ret) = slab.alloc() {
                 break Ok(ret);
