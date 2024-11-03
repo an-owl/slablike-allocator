@@ -105,7 +105,7 @@ where
                     let mask = 1 << first_zero;
                     // acquire the bit
                     let ret = self.bitmap[i].fetch_or(mask, atomic::Ordering::Acquire);
-                    if ret & mask != 0 {
+                    if ret & mask == 0 {
                         // check the *we* acquired the bit
                         return Some(first_zero + (first_element * bmap_elem_bits!()));
                     }
