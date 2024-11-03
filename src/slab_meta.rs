@@ -131,8 +131,8 @@ where
 
     /// Returns the value of the requested bit
     fn get_bit(&self, index: usize) -> bool {
-        let byte = index / size_of::<BitmapElement>() * 8;
-        let bit = 1 << index % size_of::<BitmapElement>() * 8;
+        let byte = index / (size_of::<BitmapElement>() * 8);
+        let bit = 1 << index % (size_of::<BitmapElement>() * 8);
 
         self.bitmap[byte].load(atomic::Ordering::Relaxed) & bit != 0
     }
