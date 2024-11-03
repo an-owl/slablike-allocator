@@ -383,5 +383,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_slab_alloc_u16() {
+        let mut slab = Slab::<u16, 4096>::new();
+        let slab_addr = &slab as *const _ as usize;
+        let base = &slab as *const _ as usize;
+        for i in 0..1776 {
+            // 1776 is expected number of obj-elements
+            let ptr = slab.alloc().unwrap().cast::<u8>().as_ptr() as usize;
+            assert_eq!(
+                ptr,
+                base + 272 + (2 * i),
+                "Iteration {i}, base {base:#x}, meta_end {:#x}",
+                base + 272
+            );
+        }
+    }
+
+    #[test]
+    fn init_slablike() {
+        use std::alloc::{Allocator, Global, Layout};
+        let sl = SlabLike::<Global, u16, 4096>::new(Global);
+
+        let b = Box::try_new_in(0u16, &sl).unwrap();
+    }
+
+    #[test]
+    fn slablike_free() {
+        use std::alloc::{Allocator, Global, Layout};
+        let sl = SlabLike::<Global, u16, 4096>::new(Global);
+
+        let b = Box::try_new_in(0u16, &sl).unwrap();
+        let addr = &*b as *const _ as usize;
+        drop(b);
+        let b = Box::try_new_in(0u16, &sl).unwrap();
+        assert_eq!(&*b as *const _ as usize, addr);
     }
 }
