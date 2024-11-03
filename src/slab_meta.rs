@@ -4,6 +4,12 @@ use core::sync::atomic;
 
 type BitmapElement = atomic::AtomicU8;
 
+macro_rules! bmap_elem_bits {
+    () => {
+        (::core::mem::size_of::<$crate::slab_meta::BitmapElement>() * 8)
+    };
+}
+
 pub const fn meta_bitmap_size<T>(slab_size: usize) -> usize {
     assert!(slab_size >= size_of::<T>() * 2);
     (slab_size / size_of::<T>()).div_ceil(size_of::<BitmapElement>() * 8)
@@ -73,7 +79,7 @@ where
     /// When accessing the bitmap in `self` `Self::meta_size_elements()` should be ignored.
     ///
     /// This will never return `0`
-    const fn reserved_bits() -> usize {
+    pub const fn reserved_bits() -> usize {
         size_of::<Self>().div_ceil(calc_obj_size::<T>())
     }
 
@@ -85,21 +91,30 @@ where
 
         // Skips elements which should not be checked because they are never free.as
         //
-        let first_element = Self::reserved_bits() / size_of::<BitmapElement>();
+        let first_element = Self::reserved_bits() / bmap_elem_bits!();
 
-        let mut obj_elem = None;
+        'map: for i in first_element..self.bitmap.len() {
+            // nested loop, 'element will retry this element until it either it locks a bit or exhausts the element
+            'element: loop {
+                let t = self.bitmap[i].load(atomic::Ordering::Relaxed);
 
-        for i in first_element..self.bitmap.len() {
-            let t = self.bitmap[i].load(atomic::Ordering::Relaxed);
-
-            let first_zero = t.leading_ones() as usize;
-            if first_zero == element_bits() {
-                continue;
-            } else {
-                obj_elem = Some(i);
+                let first_zero = t.trailing_ones() as usize;
+                if first_zero == element_bits() {
+                    continue 'map; // next element
+                } else {
+                    let mask = 1 << first_zero;
+                    // acquire the bit
+                    let ret = self.bitmap[i].fetch_or(mask, atomic::Ordering::Acquire);
+                    if ret & mask != 0 {
+                        // check the *we* acquired the bit
+                        return Some(first_zero + (first_element * bmap_elem_bits!()));
+                    }
+                    // we didn't acquire the bit, try a new one
+                    continue 'element;
+                }
             }
         }
-        obj_elem
+        None
     }
 
     /// Sets the value of the requested bit to `value`
