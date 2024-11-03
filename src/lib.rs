@@ -330,17 +330,37 @@ mod tests {
 
     #[test]
     fn check_slab_size() {
+        let slab = Slab::<u16, 64>::new();
+        //assert_eq!(core::mem::size_of::<Slab<u128, 64>>(), 64);
+        assert_eq!(slab.obj_elements.len(), 20);
         let slab = Slab::<u128, 64>::new();
+        assert_eq!(core::mem::size_of::<Slab<u128, 64>>(), 64);
         assert_eq!(slab.obj_elements.len(), 2);
     }
 
     #[test]
-    fn test_slab_alloc_dealloc() {
+    fn obj_elem_count() {
+        assert_eq!(slab_count_obj_elements::<u128, 64>(), 2);
+        assert_eq!(slab_count_obj_elements::<u16, 64>(), 20);
+    }
+
+    #[test]
+    fn test_slab_alloc() {
         let mut slab = Slab::<u128, 64>::new();
         let slab_addr = &slab as *const _ as usize;
         let first = slab.alloc().unwrap();
-        assert_eq!(first.cast::<u8>().as_ptr() as usize, slab_addr + 32);
+        assert_eq!(
+            first.cast::<u8>().as_ptr() as usize,
+            slab_addr + 32,
+            "base: {slab_addr:x}"
+        );
         let second = slab.alloc().unwrap();
-        assert_eq!(second.cast::<u8>().as_ptr() as usize, slab_addr + 48);
+        assert_eq!(
+            second.cast::<u8>().as_ptr() as usize,
+            slab_addr + 48,
+            "base: {slab_addr:x}"
+        );
+    }
+
     }
 }
