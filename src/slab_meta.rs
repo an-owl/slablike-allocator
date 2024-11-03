@@ -240,6 +240,37 @@ mod tests {
         assert_eq!(calc_obj_size::<TestAlign3>(), 0)
     }
 
+    #[test]
+    fn check_reserved_bits() {
+        let m = SlabMetadata::<u16, 4096>::new();
+        for i in 0..2048 {
+            assert_eq!(
+                m.get_bit(i),
+                i < SlabMetadata::<u16, 4096>::reserved_bits(),
+                "Iteration {i}, res: {}",
+                SlabMetadata::<u16, 4096>::reserved_bits()
+            );
+        }
+        let m = SlabMetadata::<u16, 64>::new();
+        for i in 0..4 {
+            assert_eq!(
+                m.get_bit(i),
+                i < SlabMetadata::<u16, 64>::reserved_bits(),
+                "Iteration {i}, res: {}",
+                SlabMetadata::<u16, 4096>::reserved_bits()
+            );
+        }
+        let m = SlabMetadata::<u128, 64>::new();
+        for i in 0..4 {
+            assert_eq!(
+                m.get_bit(i),
+                i < SlabMetadata::<u128, 64>::reserved_bits(),
+                "Iteration {i}, res: {}",
+                SlabMetadata::<u16, 4096>::reserved_bits()
+            );
+        }
+    }
+
     /// We don't really need this, it's just here to assert that the required components of
     /// `generic_const_exprs` are working correctly.
     #[test]
