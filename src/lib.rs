@@ -291,7 +291,8 @@ where
     }
 
     fn alloc(&mut self) -> Result<NonNull<[u8]>, AllocError> {
-        let t = self.slab_metadata.alloc().ok_or(AllocError)?;
+        let t = self.slab_metadata.alloc().ok_or(AllocError)?
+            - SlabMetadata::<T, SLAB_SIZE>::reserved_bits();
         let u = &mut self.obj_elements[t] as *mut core::mem::MaybeUninit<T>;
         // SAFETY: Pointer is taken from a reference
         Ok(unsafe {
