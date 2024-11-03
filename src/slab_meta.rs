@@ -104,8 +104,8 @@ where
 
     /// Sets the value of the requested bit to `value`
     pub(crate) fn set_bit(&self, index: usize, value: bool) {
-        let byte = index / size_of::<BitmapElement>() * 8;
-        let bit = 1 << index % size_of::<BitmapElement>() * 8;
+        let byte = index / (size_of::<BitmapElement>() * 8);
+        let bit = 1 << index % (size_of::<BitmapElement>() * 8);
 
         if value {
             self.bitmap[byte].fetch_or(bit, atomic::Ordering::Relaxed);
