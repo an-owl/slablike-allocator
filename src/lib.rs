@@ -322,7 +322,8 @@ where
     }
 
     fn free(&self, index: usize) {
-        self.slab_metadata.set_bit(index, false);
+        let bit = slab_meta::SlabMetadata::<T, SLAB_SIZE>::reserved_bits() + index;
+        self.slab_metadata.set_bit(bit, false);
     }
 
     fn next_slab(&self) -> Option<&mut Self> {
@@ -402,15 +403,19 @@ mod tests {
 
     #[test]
     fn init_slablike() {
-        use std::alloc::{Allocator, Global, Layout};
+        use std::alloc::Global;
         let sl = SlabLike::<Global, u16, 4096>::new(Global);
 
-        let b = Box::try_new_in(0u16, &sl).unwrap();
+        let _b = Box::try_new_in(0u16, &sl).unwrap();
+
+        let sl = SlabLike::<Global, u128, 64>::new(Global);
+
+        let _b = Box::try_new_in(0u128, &sl).unwrap();
     }
 
     #[test]
     fn slablike_free() {
-        use std::alloc::{Allocator, Global, Layout};
+        use std::alloc::Global;
         let sl = SlabLike::<Global, u16, 4096>::new(Global);
 
         let b = Box::try_new_in(0u16, &sl).unwrap();
@@ -418,5 +423,16 @@ mod tests {
         drop(b);
         let b = Box::try_new_in(0u16, &sl).unwrap();
         assert_eq!(&*b as *const _ as usize, addr);
+    }
+
+    #[test]
+    fn slablike_auto_extend() {
+        use std::alloc::Global;
+        let sl = SlabLike::<Global, u128, 64>::new(Global);
+
+        for i in 0..8 {
+            let b = Box::try_new_in(0u128, &sl).expect(&std::format!("Failed on iteration {i}"));
+            let _ = Box::leak(b);
+        }
     }
 }
