@@ -25,7 +25,7 @@
 
 mod slab_meta;
 
-use core::alloc::{AllocError, Layout};
+use core::alloc::{AllocError, Allocator, Layout};
 use core::ptr::NonNull;
 use slab_meta::SlabMetadata;
 
@@ -43,6 +43,21 @@ where
     visitors: core::sync::atomic::AtomicUsize,
 
     pointers: spin::RwLock<SlabLikePointers<T, SLAB_SIZE>>,
+}
+
+unsafe impl<A: Allocator, T, const SLAB_SIZE: usize> Send for SlabLike<A, T, SLAB_SIZE>
+where
+    A: Send,
+    [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+    [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
+{
+}
+unsafe impl<A: Allocator, T, const SLAB_SIZE: usize> Sync for SlabLike<A, T, SLAB_SIZE>
+where
+    A: Sync,
+    [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+    [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
+{
 }
 
 struct SlabLikePointers<T, const SLAB_SIZE: usize>
@@ -358,6 +373,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::boxed::Box;
+    use std::vec::Vec;
 
     #[test]
     fn check_slab_obj_count() {
@@ -450,6 +467,36 @@ mod tests {
         for i in 0..8 {
             let b = Box::try_new_in(0u128, &sl).expect(&std::format!("Failed on iteration {i}"));
             let _ = Box::leak(b);
+        }
+    }
+
+    #[test]
+    fn slablike_concurrent() {
+        use std::alloc::Global;
+        const SL: SlabLike<Global, u8, 64> = SlabLike::<Global, u8, 64>::new(Global);
+        let mut threads = std::vec::Vec::with_capacity(16);
+
+        for i in 0..2 {
+            threads.push(std::thread::spawn(move || {
+                let tid = std::thread::current().id();
+                for _ in 0..0x1000 {
+                    let mut count: u8 = 0;
+                    let mut b = Box::new_in(count, SL);
+                    loop {
+                        std::hint::spin_loop();
+                        assert_eq!(*b, count);
+                        count = count.wrapping_add(1);
+                        b = Box::new_in(count, SL);
+                    }
+                }
+                if i % 255 == 0 {
+                    eprintln!("thread {tid:?}: @ {i:#x}")
+                }
+            }));
+        }
+
+        for i in threads {
+            i.join().unwrap();
         }
     }
 }
