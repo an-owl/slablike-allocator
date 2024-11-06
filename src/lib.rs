@@ -41,12 +41,19 @@ where
     // When a thread attempts to allocate memory it must increment the visitors counter.
     // If the allocation of the current cursor fails
     visitors: core::sync::atomic::AtomicUsize,
-    lock: core::sync::atomic::AtomicBool,
 
+    pointers: spin::RwLock<SlabLikePointers<T, SLAB_SIZE>>,
+}
+
+struct SlabLikePointers<T, const SLAB_SIZE: usize>
+where
+    [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+    [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
+{
     // Head and tail must always be the same variant
-    head: core::sync::atomic::AtomicPtr<Slab<T, SLAB_SIZE>>,
-    tail: core::sync::atomic::AtomicPtr<Slab<T, SLAB_SIZE>>,
-    cursor: core::sync::atomic::AtomicPtr<Slab<T, SLAB_SIZE>>,
+    head: Option<NonNull<Slab<T, SLAB_SIZE>>>,
+    tail: Option<NonNull<Slab<T, SLAB_SIZE>>>,
+    cursor: Option<NonNull<Slab<T, SLAB_SIZE>>>,
 }
 
 impl<A: core::alloc::Allocator, T: 'static, const SLAB_SIZE: usize> SlabLike<A, T, SLAB_SIZE>
@@ -57,61 +64,13 @@ where
     pub const fn new(alloc: A) -> Self {
         Self {
             alloc,
-            lock: core::sync::atomic::AtomicBool::new(false),
             visitors: core::sync::atomic::AtomicUsize::new(0),
-            head: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-            tail: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
-            cursor: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+            pointers: spin::RwLock::new(SlabLikePointers {
+                head: None,
+                tail: None,
+                cursor: None,
+            }),
         }
-    }
-
-    /// Allocates a new slab, appends it to the end of the linked list
-    fn new_append(&self) -> Result<(), AllocError> {
-        let n_slab = self.new_slab()?;
-
-        while self
-            .lock
-            .compare_exchange_weak(
-                false,
-                true,
-                core::sync::atomic::Ordering::Acquire,
-                core::sync::atomic::Ordering::Relaxed,
-            )
-            .is_err()
-        {
-            core::hint::spin_loop()
-        }
-
-        // Only slab, initialize all pointers
-        if self
-            .head
-            .load(core::sync::atomic::Ordering::Relaxed)
-            .is_null()
-        {
-            self.head.store(
-                (n_slab as *mut Slab<T, SLAB_SIZE>).cast(),
-                core::sync::atomic::Ordering::Relaxed,
-            );
-            self.tail.store(
-                (n_slab as *mut Slab<T, SLAB_SIZE>).cast(),
-                core::sync::atomic::Ordering::Relaxed,
-            );
-            self.cursor.store(
-                (n_slab as *mut Slab<T, SLAB_SIZE>).cast(),
-                core::sync::atomic::Ordering::Relaxed,
-            );
-        } else {
-            let tail = self.tail().expect("Tail not initialized");
-            debug_assert!(tail.set_next(Some(n_slab)).is_none());
-            tail.set_next(Some(n_slab));
-            self.tail
-                .store(n_slab, core::sync::atomic::Ordering::Relaxed);
-        }
-
-        self.lock
-            .store(false, core::sync::atomic::Ordering::Release);
-
-        Ok(())
     }
 
     fn new_slab(&self) -> Result<&'static mut Slab<T, SLAB_SIZE>, AllocError> {
@@ -127,80 +86,55 @@ where
 
     /// Returns a reference to the last slab owned by self.
     fn tail(&self) -> Option<&mut Slab<T, SLAB_SIZE>> {
-        let t = self.tail.load(core::sync::atomic::Ordering::Relaxed);
-        if t.is_null() {
-            None
-        } else {
-            Some(unsafe { &mut *t })
-        }
+        self.pointers
+            .read()
+            .tail
+            .map(|ptr| unsafe { &mut *ptr.as_ptr().cast() })
     }
 
     /// Returns a reference to the first slab owned by self
     fn head(&self) -> Option<&mut Slab<T, SLAB_SIZE>> {
-        let t = self.head.load(core::sync::atomic::Ordering::Relaxed);
-        if t.is_null() {
-            None
-        } else {
-            Some(unsafe { &mut *t })
-        }
+        self.pointers
+            .read()
+            .head
+            .map(|ptr| unsafe { &mut *ptr.as_ptr().cast() })
     }
 
     /// Returns a reference to the slab pointed at by the cursor.
     fn cursor(&self) -> Option<&mut Slab<T, SLAB_SIZE>> {
-        let t = self.cursor.load(core::sync::atomic::Ordering::Relaxed);
-        if t.is_null() {
-            None
-        } else {
-            Some(unsafe { &mut *t })
-        }
+        self.pointers
+            .read()
+            .head
+            .map(|ptr| unsafe { &mut *ptr.as_ptr().cast() })
     }
+}
 
+impl<T, const SLAB_SIZE: usize> SlabLikePointers<T, SLAB_SIZE>
+where
+    [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+    [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
+{
     /// Updates the cursor to point to `next`.
     /// This method should be called when `self.cursor` failed to allocate memory and the visitor count is zero.
     ///
     /// # Safety
     ///
-    /// This method is unsafe because the caller must ensure that `self.lock` is set and there are
-    /// no visitors.
-    unsafe fn advance_cursor(&self, next: Option<&mut Slab<T, SLAB_SIZE>>) {
-        debug_assert!(self.lock.load(core::sync::atomic::Ordering::Relaxed));
-        debug_assert_eq!(self.visitors.load(core::sync::atomic::Ordering::Relaxed), 0);
-        self.cursor.store(
-            next.map(|p| p as *mut _).unwrap_or(core::ptr::null_mut()),
-            core::sync::atomic::Ordering::Relaxed,
-        );
+    /// The caller must ensure that `next` is contained within `self`'s linked list.
+    unsafe fn advance_cursor(&mut self, next: Option<&mut Slab<T, SLAB_SIZE>>) {
+        self.cursor = next.map(|p| NonNull::new(p).unwrap());
     }
 
     /// Locates a slab that the caller will allocate memory from and determines whether the cursor must be updated.
-    fn get_usable_slab(
-        &self,
-        visitor: usize,
-    ) -> Result<(&mut Slab<T, SLAB_SIZE>, bool), AllocError> {
-        let mut slab = loop {
-            if let Some(slab) = self.cursor() {
-                break slab;
-            } else {
-                self.new_append()?;
-            };
-        };
+    ///
+    /// If no slab can be found then the caller should allocate a new slab and append it to the linked list.
+    fn get_usable_slab(&self, visitor: usize) -> Option<(&mut Slab<T, SLAB_SIZE>, bool)> {
+        let slab = self.cursor.map(|p| unsafe { &mut *p.as_ptr() })?;
 
-        loop {
-            match self.locate_available_slab(visitor, slab) {
-                Ok(slab_r) => {
-                    // returns good slab, checks that
-                    let dirty = core::ptr::eq(
-                        slab_r,
-                        self.cursor.load(core::sync::atomic::Ordering::Relaxed),
-                    );
-                    return Ok((slab_r, dirty));
-                }
-                Err(last_slab) => {
-                    slab = last_slab;
-                    self.new_append()?;
-                    continue;
-                }
-            }
-        }
+        let slab_r = self.locate_available_slab(visitor, slab)?;
+
+        // returns good slab, checks that
+        let dirty = core::ptr::eq(slab_r, self.cursor.unwrap().as_ptr());
+        Some((slab_r, dirty))
     }
 
     /// Attempts to locate a slab which can be used to allocate new data from.
@@ -211,20 +145,36 @@ where
         &'a self,
         mut visitors: usize,
         mut slab: &'a mut Slab<T, SLAB_SIZE>,
-    ) -> Result<&'a mut Slab<T, SLAB_SIZE>, &'a mut Slab<T, SLAB_SIZE>> {
+    ) -> Option<&'a mut Slab<T, SLAB_SIZE>> {
         loop {
             // We know how many free OEs are in each slab, so we subtract the visitor count by that until it underflows.
             // This slab is guaranteed to have a free OE.
             match visitors.checked_sub(slab.query_free()) {
                 Some(n) => {
                     visitors = n;
-                    match slab.next_slab() {
-                        Some(n) => slab = n,      // update slab
-                        None => return Err(slab), // dont update slab
-                    }
+                    slab = slab.next_slab()?
                 }
-                None => return Ok(slab),
+                None => return Some(slab),
             }
+        }
+    }
+
+    /// Allocates a new slab, appends it to the end of the linked list.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `slab` is not already within the list.
+    unsafe fn new_append(&mut self, slab: &'static mut Slab<T, SLAB_SIZE>) {
+        if self.head.is_none() {
+            // Only slab, initialize all pointers
+            self.head = Some(NonNull::new(slab as *mut Slab<T, SLAB_SIZE>).unwrap());
+            self.tail = Some(NonNull::new(slab as *mut Slab<T, SLAB_SIZE>).unwrap());
+            self.cursor = Some(NonNull::new(slab as *mut Slab<T, SLAB_SIZE>).unwrap());
+        } else {
+            let tail = unsafe { &mut *self.tail.expect("Tail not initialized").as_ptr() };
+            let _r = tail.set_next(Some(slab));
+            debug_assert!(_r.is_none());
+            self.tail = Some(NonNull::new(slab as *mut Slab<T, SLAB_SIZE>).unwrap());
         }
     }
 }
@@ -244,61 +194,42 @@ where
             Layout::new::<T>()
         );
 
-        while self
-            .lock
-            .compare_exchange_weak(
-                false,
-                true,
-                core::sync::atomic::Ordering::Acquire,
-                core::sync::atomic::Ordering::Relaxed,
-            )
-            .is_err()
-        {
-            core::hint::spin_loop();
-        }
         let visitors = self
             .visitors
             .fetch_add(1, core::sync::atomic::Ordering::Acquire);
-        self.lock
-            .store(false, core::sync::atomic::Ordering::Release);
 
-        let mut rc = self.get_usable_slab(visitors);
-        let ra = if let Ok((ref mut slab, _)) = rc {
-            slab.alloc()
-        } else {
-            Err(AllocError)
+        let mut rl = self.pointers.upgradeable_read();
+        let (ptr, slab, dirty) = match rl.get_usable_slab(visitors) {
+            Some((slab, dirty)) => (slab.alloc()?, slab, dirty),
+            None => {
+                let ns = self.new_slab()?;
+                let rc = ns.alloc()?;
+                // SAFETY: This is guaranteed to not be within the existing list.
+                let mut wl = rl.upgrade();
+                unsafe { wl.new_append(ns) };
+                let ret = (rc, unsafe { &mut *wl.tail.unwrap().as_ptr() }, true);
+                rl = wl.downgrade_to_upgradeable();
+                ret
+            }
         };
 
-        while self
-            .lock
-            .compare_exchange_weak(
-                false,
-                true,
-                core::sync::atomic::Ordering::Acquire,
-                core::sync::atomic::Ordering::Relaxed,
-            )
-            .is_err()
+        // SAFETY: This disassociates `slab`'s lifetime from `rl`.
+        // rl.upgrade() consumes `rl` but `slab` is bounded to it.
+        // `slab` is taken as mutable but is not mutated after `rl` is dropped.
+        let slab = unsafe {
+            core::mem::transmute::<&mut Slab<T, SLAB_SIZE>, &'static mut Slab<T, SLAB_SIZE>>(slab)
+        };
+
+        if self
+            .visitors
+            .fetch_sub(1, core::sync::atomic::Ordering::Release)
+            == 1
+            && dirty
         {
-            core::hint::spin_loop();
-        }
+            unsafe { rl.upgrade().advance_cursor(Some(slab)) }
+        };
 
-        // match was easier than wierd if statement
-        match (
-            rc,
-            self.visitors
-                .fetch_sub(1, core::sync::atomic::Ordering::Release),
-        ) {
-            (Ok((ref mut slab, true)), 1) => {
-                // SAFETY: We have acquired the lock bit, and can assert that the visitor count is 0
-                unsafe { self.advance_cursor(Some(*slab)) }
-            }
-            _ => {}
-        }
-
-        self.lock
-            .store(false, core::sync::atomic::Ordering::Release);
-
-        ra
+        Ok(ptr)
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
@@ -413,7 +344,7 @@ where
             .map(|p| unsafe { &mut *p })
     }
 
-    fn insert_next(&mut self, mut new: Option<&mut Self>) {
+    fn insert_next(&mut self, new: Option<&mut Self>) {
         new.as_ref().unwrap().set_prev(Some(self));
         if let Some(old_next) = self.set_next(new) {}
     }
@@ -521,13 +452,4 @@ mod tests {
             let _ = Box::leak(b);
         }
     }
-
-    /*
-    #[test]
-    fn cursor_or_new() {
-        let sl = SlabLike::<std::alloc::Global, u128, 64>::new(std::alloc::Global);
-        //sl.cursor_or_new().unwrap("Failed to get cursor");
-    }
-
-     */
 }
