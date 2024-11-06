@@ -471,26 +471,36 @@ mod tests {
     }
 
     #[test]
+    fn slablike_go_hard() {
+        use std::alloc::Global;
+        let sl = SlabLike::<Global, u8, 64>::new(Global);
+
+        for i in 0..0x100_0000 {
+            let b = Box::new_in(0u8, &sl);
+        }
+    }
+
+    #[test]
     fn slablike_concurrent() {
         use std::alloc::Global;
         const SL: SlabLike<Global, u8, 64> = SlabLike::<Global, u8, 64>::new(Global);
         let mut threads = std::vec::Vec::with_capacity(16);
 
-        for i in 0..2 {
+        for i in 0..16 {
             threads.push(std::thread::spawn(move || {
                 let tid = std::thread::current().id();
-                for _ in 0..0x1000 {
+                for n in 0..0x10_0000 {
                     let mut count: u8 = 0;
                     let mut b = Box::new_in(count, SL);
-                    loop {
-                        std::hint::spin_loop();
-                        assert_eq!(*b, count);
-                        count = count.wrapping_add(1);
-                        b = Box::new_in(count, SL);
+
+                    std::hint::spin_loop();
+                    assert_eq!(*b, count);
+                    count = count.wrapping_add(1);
+                    b = Box::new_in(count, SL);
+
+                    if n % 256 == 0 {
+                        eprintln!("thread {tid:?}: @ {n:#x}")
                     }
-                }
-                if i % 255 == 0 {
-                    eprintln!("thread {tid:?}: @ {i:#x}")
                 }
             }));
         }
