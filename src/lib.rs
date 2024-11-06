@@ -98,30 +98,6 @@ where
         let n_slab: &mut Slab<T, SLAB_SIZE> = unsafe { &mut *ptr?.as_ptr().cast() };
         Ok(n_slab)
     }
-
-    /// Returns a reference to the last slab owned by self.
-    fn tail(&self) -> Option<&mut Slab<T, SLAB_SIZE>> {
-        self.pointers
-            .read()
-            .tail
-            .map(|ptr| unsafe { &mut *ptr.as_ptr().cast() })
-    }
-
-    /// Returns a reference to the first slab owned by self
-    fn head(&self) -> Option<&mut Slab<T, SLAB_SIZE>> {
-        self.pointers
-            .read()
-            .head
-            .map(|ptr| unsafe { &mut *ptr.as_ptr().cast() })
-    }
-
-    /// Returns a reference to the slab pointed at by the cursor.
-    fn cursor(&self) -> Option<&mut Slab<T, SLAB_SIZE>> {
-        self.pointers
-            .read()
-            .head
-            .map(|ptr| unsafe { &mut *ptr.as_ptr().cast() })
-    }
 }
 
 impl<T, const SLAB_SIZE: usize> SlabLikePointers<T, SLAB_SIZE>
@@ -357,11 +333,6 @@ where
         self.slab_metadata
             .set_prev(slab.map(|p| p as *mut _))
             .map(|p| unsafe { &mut *p })
-    }
-
-    fn insert_next(&mut self, new: Option<&mut Self>) {
-        new.as_ref().unwrap().set_prev(Some(self));
-        if let Some(old_next) = self.set_next(new) {}
     }
 
     /// Returns the number of free object elements in `self`
