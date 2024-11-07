@@ -137,6 +137,14 @@ where
         }
     }
 
+    /// Returns the value of the requested bit
+    fn get_bit(&self, index: usize) -> bool {
+        let byte = index / (size_of::<BitmapElement>() * 8);
+        let bit = 1 << index % (size_of::<BitmapElement>() * 8);
+
+        self.bitmap[byte].load(atomic::Ordering::Relaxed) & bit != 0
+    }
+
     pub(crate) fn prev_slab(&self) -> Option<*mut Slab<T, SLAB_SIZE>> {
         let t = self.prev.load(atomic::Ordering::Relaxed);
         if t.is_null() {
