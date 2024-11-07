@@ -98,6 +98,110 @@ where
         let n_slab: &mut Slab<T, SLAB_SIZE> = unsafe { &mut *ptr?.as_ptr().cast() };
         Ok(n_slab)
     }
+
+    pub fn count_slabs(&self) -> usize {
+        let lr = self.pointers.read();
+        let mut slab = if let Some(n) = lr.head {
+            unsafe { &*n.as_ptr() }
+        } else {
+            debug_assert!(lr.tail.is_none());
+            debug_assert!(lr.cursor.is_none());
+            return 0;
+        };
+
+        let mut count = 1;
+        loop {
+            match slab.next_slab() {
+                Some(p) => slab = p,
+                None => return count,
+            }
+            count = count.checked_add(1).expect("slab count exceeds usize::MAX");
+        }
+    }
+
+    pub fn sanitize(&self) {
+        self.sanitize_inner();
+    }
+
+    fn sanitize_inner(&self) -> Option<()> {
+        let mut wl = self.pointers.write();
+        let mut slab = wl.cursor.map(|p| p.as_ptr());
+
+        while let Some(s) = slab {
+            if unsafe { &mut *s }.sanitise_query_split() {
+                let new_prev = unsafe { &mut *s }.sanitize_locate_end();
+
+                let split_off_head = if let Some(new_pre) = &new_prev {
+                    new_pre.next_slab().unwrap()
+                } else {
+                    // If the entire head is split off then self.head is the split-off-head.
+                    // We need to take it and point it to slab which is now our head.
+                    let r = unsafe { &mut *wl.head.unwrap().as_ptr() };
+                    wl.head = Some(NonNull::new(*slab.as_mut().unwrap()).unwrap());
+                    r
+                };
+
+                // we append this to the tail.
+                // Inserting after the cursor might improve the cache hit rate, but its more complicated.
+                // I might test this in the future.
+                let split_off_tail = unsafe { &mut *s }.set_prev(new_prev)?;
+                let tail = unsafe { &mut *wl.tail.unwrap().as_ptr() };
+                tail.set_next(Some(split_off_head)).unwrap();
+                wl.tail = Some(NonNull::new(split_off_tail).unwrap());
+            } else {
+                slab = unsafe { &mut *s }
+                    .prev_slab()
+                    .map(|r| r as *mut Slab<T, SLAB_SIZE>)
+            }
+        }
+
+        Some(())
+    }
+
+    /// Extends allocator to fit `size` more objects.
+    pub fn extend(&self, size: usize) -> Result<(), AllocError> {
+        let new_slabs = size.div_ceil(slab_count_obj_elements::<T, SLAB_SIZE>());
+        let mut wl = self.pointers.write();
+        // It might be better to allocate all new slabs into a vec to reduce how long we have the write lock.
+        // we can also optimize this by switching it to a proper linked list insertion.
+        for _ in 0..new_slabs {
+            let n = self.new_slab()?;
+            // SAFETY: n is new.
+            unsafe { wl.new_append(n) }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(debug_assertions)]
+    fn sanity_check(&self, maybe_empty: bool) {
+        let lr = self.pointers.read();
+        let mut slab = if let Some(n) = lr.head {
+            unsafe { &*n.as_ptr() }
+        } else {
+            assert!(lr.tail.is_none());
+            assert!(lr.cursor.is_none());
+            assert!(maybe_empty, "List was empty when it was not expected");
+            return;
+        };
+
+        let mut hit_cursor = false;
+
+        loop {
+            match slab.next_slab() {
+                Some(p) => {
+                    if core::ptr::addr_eq(p, lr.cursor.expect("Cursor must be set").as_ptr()) {
+                        hit_cursor = true;
+                    }
+                    slab = p
+                }
+                None => break,
+            }
+        }
+
+        assert!(hit_cursor);
+        assert!(core::ptr::addr_eq(lr.tail.unwrap().as_ptr(), slab))
+    }
 }
 
 impl<T, const SLAB_SIZE: usize> SlabLikePointers<T, SLAB_SIZE>
@@ -324,12 +428,12 @@ where
         Some(unsafe { &mut *self.slab_metadata.prev_slab()? })
     }
 
-    fn set_next(&self, slab: Option<&mut Self>) -> Option<&mut Self> {
+    fn set_next(&self, slab: Option<&mut Self>) -> Option<&'static mut Self> {
         self.slab_metadata
             .set_next(slab.map(|p| p as *mut _))
             .map(|p| unsafe { &mut *p })
     }
-    fn set_prev(&self, slab: Option<&mut Self>) -> Option<&mut Self> {
+    fn set_prev(&self, slab: Option<&mut Self>) -> Option<&'static mut Self> {
         self.slab_metadata
             .set_prev(slab.map(|p| p as *mut _))
             .map(|p| unsafe { &mut *p })
@@ -338,6 +442,27 @@ where
     /// Returns the number of free object elements in `self`
     fn query_free(&self) -> usize {
         slab_count_obj_elements::<T, SLAB_SIZE>() - self.slab_metadata.allocated()
+    }
+
+    /// Determines whether the previous slab should be split off for a sanitize operation.
+    ///
+    /// Returns `true` when the previous slab contains free object elements.
+    fn sanitise_query_split(&self) -> bool {
+        match self.prev_slab() {
+            Some(p_slab) => p_slab.query_free() > 0,
+            None => false,
+        }
+    }
+
+    /// Returns the slab which should be joined at the original split.
+    ///
+    /// If this returns `None` then there are no exhausted slabs remaining within the list.
+    fn sanitize_locate_end(&mut self) -> Option<&'static mut Self> {
+        if !self.sanitise_query_split() {
+            self.set_prev(None)
+        } else {
+            self.prev_slab()?.sanitize_locate_end()
+        }
     }
 }
 
@@ -479,5 +604,14 @@ mod tests {
         for i in threads {
             i.join().unwrap();
         }
+    }
+
+    #[test]
+    fn sizing_and_extending() {
+        let sl = SlabLike::<std::alloc::Global, u8, 64>::new(std::alloc::Global);
+        sl.extend(128).unwrap();
+        eprintln!("{}", size_of::<SlabMetadata::<u8, 64>>());
+
+        assert_eq!(sl.count_slabs(), 4)
     }
 }
