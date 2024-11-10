@@ -614,4 +614,76 @@ mod tests {
 
         assert_eq!(sl.count_slabs(), 4)
     }
+
+    #[test]
+    fn test_housekeeping() {
+        use rand::prelude::*;
+        static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
+        let sl = &SL;
+
+        const ALLOC_COUNT: usize = 0x10_0000;
+
+        let mut rng = thread_rng();
+        let mut buff = std::vec::Vec::new();
+        for _ in 0..ALLOC_COUNT {
+            buff.push(std::boxed::Box::new_in(0u8, &SL));
+        }
+
+        let p = &*buff;
+
+        for _ in 0..32 {
+            buff.shuffle(&mut rng);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            for _ in 0..ALLOC_COUNT / 2 {
+                assert_eq!(*buff.pop().unwrap(), 0)
+            }
+
+            SL.sanity_check(false);
+            SL.sanitize();
+
+            for count in 0..ALLOC_COUNT / 2 {
+                buff.push(std::boxed::Box::new_in(0, &SL));
+            }
+            SL.sanity_check(false);
+        }
+    }
+
+    #[test]
+    fn check_housekeeping_concurrent() {
+        extern crate std;
+        use rand::prelude::*;
+        static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
+        let sl = &SL;
+        let mut threads = std::vec::Vec::new();
+        for thread in 0..1u8 {
+            threads.push(std::thread::spawn(move || {
+                let mut rng = StdRng::seed_from_u64(69);
+                let mut buff = std::vec::Vec::new();
+                for _ in 0..0x10_0000 {
+                    buff.push(std::boxed::Box::new(thread));
+                }
+
+                let p = &*buff;
+
+                for _ in 0..32 {
+                    buff.shuffle(&mut rng);
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    for _ in 0..0x8_0000 {
+                        assert_eq!(*buff.pop().unwrap(), thread)
+                    }
+
+                    SL.sanitize();
+
+                    for _ in 0..0x8_0000 {
+                        buff.push(std::boxed::Box::new(thread));
+                    }
+                    SL.sanity_check(false);
+                }
+            }));
+        }
+
+        for t in threads {
+            t.join().unwrap();
+        }
+    }
 }
