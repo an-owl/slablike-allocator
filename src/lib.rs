@@ -653,14 +653,13 @@ mod tests {
         extern crate std;
         use rand::prelude::*;
         static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
-        let sl = &SL;
         let mut threads = std::vec::Vec::new();
         for thread in 0..1u8 {
             threads.push(std::thread::spawn(move || {
                 let mut rng = StdRng::seed_from_u64(69);
                 let mut buff = std::vec::Vec::new();
                 for _ in 0..0x10_0000 {
-                    buff.push(std::boxed::Box::new(thread));
+                    buff.push(std::boxed::Box::new_in(thread, &SL));
                 }
 
                 let p = &*buff;
@@ -677,7 +676,7 @@ mod tests {
                     SL.sanity_check(false);
 
                     for _ in 0..0x8_0000 {
-                        buff.push(std::boxed::Box::new(thread));
+                        buff.push(std::boxed::Box::new_in(thread, &SL));
                     }
                     SL.sanity_check(false);
                 }
