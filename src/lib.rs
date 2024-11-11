@@ -218,6 +218,102 @@ where
         assert!(hit_cursor);
         assert!(core::ptr::addr_eq(lr.tail.unwrap().as_ptr(), slab))
     }
+
+    /// Attempts to remove `shrink` slabs from the linked list.
+    /// If `count` slabs are removed then this will return `Ok(count)` else it will return
+    /// `Err(n)` where `n` is the number of slabs removed.
+    ///
+    /// This will only scan slabs after the cursor. The caller should call [Self::sanitize] before
+    /// calling this to scan all available slabs.
+    ///
+    /// This fn will return `Err(0)` if the cursor is not set.
+    ///
+    /// This method blocks allocation.
+    #[allow(dead_code)]
+    pub fn shrink(&self, shrink: usize) -> Result<usize, usize> {
+        let mut wl = self.pointers.write();
+        let mut slab = wl
+            .cursor
+            .map(|p| unsafe { &mut *p.as_ptr() })
+            .ok_or(0usize)?;
+        let mut count = 0;
+
+        while count < shrink {
+            if slab.query_free() == slab_count_obj_elements::<T, SLAB_SIZE>() {
+                // remove slab
+                let mut last = slab.prev_slab();
+                let mut next = slab.next_slab();
+                if let Some(ref mut l) = last {
+                    l.set_next(slab.next_slab());
+                }
+                if let Some(ref mut n) = next {
+                    n.set_next(slab.prev_slab());
+                }
+
+                macro_rules! rm_ptr {
+                    ($ptr:expr, $slab:ident, $replace:expr) => {
+                        match $ptr {
+                            Some(cursor) if core::ptr::addr_eq(cursor.as_ptr(), $slab) => {
+                                $ptr = $replace.map(|p| unsafe { NonNull::new_unchecked(p) });
+                            }
+                            _ => {}
+                        }
+                    };
+                }
+
+                rm_ptr!(wl.cursor, slab, slab.next_slab());
+                rm_ptr!(wl.head, slab, slab.next_slab());
+                rm_ptr!(wl.tail, slab, slab.prev_slab());
+
+                /*
+                match wl.cursor {
+                    Some(cursor) if core::ptr::addr_eq(cursor.as_ptr(), slab) => {
+                        // SAFETY: This is safe because it's cast from a reference which may not be null.
+                        wl.cursor = slab.next_slab().map(|p| unsafe { NonNull::new_unchecked(p) });
+                    }
+                    _ => {}
+                }
+
+                 */
+
+                if let Some(n_slab) = next {
+                    core::mem::swap(slab, n_slab);
+                    let curr_slab = n_slab;
+                    // SAFETY: NonNull::new_unchecked is safe because it's cast from a reference which may not be null.
+                    // dealloc is safe because we have removed all pointers to it.
+                    unsafe {
+                        self.alloc.deallocate(
+                            NonNull::new_unchecked(curr_slab as *mut _ as *mut u8),
+                            Layout::from_size_align(size_of::<Slab<T, SLAB_SIZE>>(), SLAB_SIZE)
+                                .unwrap(),
+                        )
+                    };
+                    count += 1;
+                    #[cfg(debug_assertions)]
+                    self.slab_count
+                        .fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+                } else {
+                    // SAFETY: dealloc is safe because we have removed all pointers to it.
+                    unsafe {
+                        self.alloc.deallocate(
+                            NonNull::new_unchecked(slab as *mut _ as *mut u8),
+                            Layout::from_size_align(size_of::<Slab<T, SLAB_SIZE>>(), SLAB_SIZE)
+                                .unwrap(),
+                        )
+                    };
+
+                    return Err(count);
+                }
+            } else {
+                match slab.next_slab() {
+                    Some(s) => slab = s,
+                    None => return Err(count),
+                }
+            }
+        }
+
+        Ok(shrink)
+    }
 }
 
 impl<T, const SLAB_SIZE: usize> SlabLikePointers<T, SLAB_SIZE>
@@ -698,5 +794,74 @@ mod tests {
         for t in threads {
             t.join().unwrap();
         }
+    }
+
+    #[test]
+    fn check_shrink_simple() {
+        static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
+
+        SL.extend(256).unwrap();
+        assert_eq!(SL.shrink(8), Ok(8), "All slabs should've been removed");
+        SL.sanity_check(true);
+        SL.extend(256).unwrap();
+        let b = std::boxed::Box::new_in(0, &SL);
+        assert_eq!(SL.shrink(8), Err(7), "All slabs should've been removed");
+        SL.sanity_check(false);
+        drop(b);
+        assert_eq!(SL.shrink(1), Ok(1), "All slabs should've been removed");
+    }
+
+    #[test]
+    fn check_shrink_random() {
+        use rand::prelude::*;
+        static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
+        let mut rand = rand::thread_rng();
+
+        let mut buff = std::vec::Vec::new();
+        for _ in 0..128 {
+            let chunk: [std::boxed::Box<u8, &SlabLike<std::alloc::Global, u8, 64>>; 32] =
+                core::array::from_fn(|_| std::boxed::Box::new_in(0u8, &SL));
+            buff.push(chunk);
+        }
+        buff.shuffle(&mut rand);
+
+        for _ in 0..64 {
+            buff.pop();
+        }
+
+        assert_eq!(SL.shrink(usize::MAX), Err(64))
+    }
+
+    #[test]
+    fn check_shrink_rand_with_noise() {
+        use rand::prelude::*;
+        static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
+        let mut rand = rand::thread_rng();
+
+        let mut buff = std::vec::Vec::new();
+        for _ in 0..128 {
+            let chunk: [std::boxed::Box<u8, &SlabLike<std::alloc::Global, u8, 64>>; 32] =
+                core::array::from_fn(|_| std::boxed::Box::new_in(0u8, &SL));
+            buff.push(chunk);
+        }
+        buff.shuffle(&mut rand);
+
+        for _ in 0..32 {
+            buff.pop();
+        }
+
+        let mut flat_buff = buff.into_iter().flatten().collect::<Vec<_>>();
+        flat_buff.shuffle(&mut rand);
+        for _ in 0..1536 {
+            // that's half of the remaining size
+            flat_buff.pop();
+        }
+
+        assert_eq!(SL.shrink(32), Ok(32));
+        assert_eq!(
+            SL.shrink(usize::MAX),
+            Err(0),
+            "This may spuriously fail due to randomness, rerun this a few times"
+        );
     }
 }
