@@ -470,7 +470,6 @@ where
 mod tests {
     use super::*;
     use std::boxed::Box;
-    use std::vec::Vec;
 
     #[test]
     fn check_slab_obj_count() {
@@ -640,6 +639,7 @@ mod tests {
 
             SL.sanity_check(false);
             SL.sanitize();
+            SL.sanity_check(false);
 
             for count in 0..ALLOC_COUNT / 2 {
                 buff.push(std::boxed::Box::new_in(0, &SL));
@@ -672,7 +672,9 @@ mod tests {
                         assert_eq!(*buff.pop().unwrap(), thread)
                     }
 
+                    SL.sanity_check(false);
                     SL.sanitize();
+                    SL.sanity_check(false);
 
                     for _ in 0..0x8_0000 {
                         buff.push(std::boxed::Box::new(thread));
