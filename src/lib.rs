@@ -41,6 +41,8 @@ where
     // When a thread attempts to allocate memory it must increment the visitors counter.
     // If the allocation of the current cursor fails
     visitors: core::sync::atomic::AtomicUsize,
+    #[cfg(debug_assertions)]
+    slab_count: core::sync::atomic::AtomicUsize,
 
     pointers: spin::RwLock<SlabLikePointers<T, SLAB_SIZE>>,
 }
@@ -80,6 +82,8 @@ where
         Self {
             alloc,
             visitors: core::sync::atomic::AtomicUsize::new(0),
+            #[cfg(debug_assertions)]
+            slab_count: core::sync::atomic::AtomicUsize::new(0),
             pointers: spin::RwLock::new(SlabLikePointers {
                 head: None,
                 tail: None,
@@ -96,6 +100,10 @@ where
 
         unsafe { slab_ptr.write(Slab::<T, SLAB_SIZE>::new()) };
         let n_slab: &mut Slab<T, SLAB_SIZE> = unsafe { &mut *ptr?.as_ptr().cast() };
+        #[cfg(debug_assertions)]
+        self.slab_count
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
         Ok(n_slab)
     }
 
@@ -174,6 +182,7 @@ where
     }
 
     #[cfg(debug_assertions)]
+    #[allow(dead_code)]
     fn sanity_check(&self, maybe_empty: bool) {
         let lr = self.pointers.read();
         let mut slab = if let Some(n) = lr.head {
@@ -185,6 +194,8 @@ where
             return;
         };
 
+        let mut count = 1;
+
         let mut hit_cursor = false;
 
         loop {
@@ -193,12 +204,17 @@ where
                     if core::ptr::addr_eq(p, lr.cursor.expect("Cursor must be set").as_ptr()) {
                         hit_cursor = true;
                     }
+                    count += 1;
                     slab = p
                 }
                 None => break,
             }
         }
 
+        assert_eq!(
+            count,
+            self.slab_count.load(core::sync::atomic::Ordering::Relaxed)
+        );
         assert!(hit_cursor);
         assert!(core::ptr::addr_eq(lr.tail.unwrap().as_ptr(), slab))
     }
