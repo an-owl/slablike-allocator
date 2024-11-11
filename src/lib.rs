@@ -592,10 +592,6 @@ mod tests {
                     assert_eq!(*b, count);
                     count = count.wrapping_add(1);
                     b = Box::new_in(count, SL);
-
-                    if n % 256 == 0 {
-                        eprintln!("thread {tid:?}: @ {n:#x}")
-                    }
                 }
             }));
         }
