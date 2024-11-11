@@ -348,7 +348,7 @@ where
             0
         } else {
             // offset divided by element size, returns element index
-            offset / (tgt_slab.obj_elements.len()) / size_of_val(&tgt_slab.obj_elements)
+            offset / ((tgt_slab.obj_elements.len()) / size_of_val(&tgt_slab.obj_elements))
         };
 
         tgt_slab.free(index)
