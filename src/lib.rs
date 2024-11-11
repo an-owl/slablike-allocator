@@ -230,7 +230,7 @@ where
     ///
     /// This method blocks allocation.
     #[allow(dead_code)]
-    pub fn shrink(&self, shrink: usize) -> Result<usize, usize> {
+    pub fn free_slabs(&self, shrink: usize) -> Result<usize, usize> {
         let mut wl = self.pointers.write();
         let mut slab = wl
             .cursor
@@ -801,14 +801,14 @@ mod tests {
         static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
 
         SL.extend(256).unwrap();
-        assert_eq!(SL.shrink(8), Ok(8), "All slabs should've been removed");
+        assert_eq!(SL.free_slabs(8), Ok(8), "All slabs should've been removed");
         SL.sanity_check(true);
         SL.extend(256).unwrap();
         let b = std::boxed::Box::new_in(0, &SL);
-        assert_eq!(SL.shrink(8), Err(7), "All slabs should've been removed");
+        assert_eq!(SL.free_slabs(8), Err(7), "All slabs should've been removed");
         SL.sanity_check(false);
         drop(b);
-        assert_eq!(SL.shrink(1), Ok(1), "All slabs should've been removed");
+        assert_eq!(SL.free_slabs(1), Ok(1), "All slabs should've been removed");
     }
 
     #[test]
@@ -829,7 +829,7 @@ mod tests {
             buff.pop();
         }
 
-        assert_eq!(SL.shrink(usize::MAX), Err(64))
+        assert_eq!(SL.free_slabs(usize::MAX), Err(64))
     }
 
     #[test]
@@ -857,9 +857,9 @@ mod tests {
             flat_buff.pop();
         }
 
-        assert_eq!(SL.shrink(32), Ok(32));
+        assert_eq!(SL.free_slabs(32), Ok(32));
         assert_eq!(
-            SL.shrink(usize::MAX),
+            SL.free_slabs(usize::MAX),
             Err(0),
             "This may spuriously fail due to randomness, rerun this a few times"
         );
