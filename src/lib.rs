@@ -802,13 +802,17 @@ mod tests {
         static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
 
         SL.extend(256).unwrap();
+        SL.sanitize();
+        SL.sanity_check(false);
         assert_eq!(SL.free_slabs(8), Ok(8), "All slabs should've been removed");
         SL.sanity_check(true);
         SL.extend(256).unwrap();
-        let b = std::boxed::Box::new_in(0, &SL);
+        SL.sanitize();
+        let b = std::boxed::Box::new_in(0u8, &SL);
         assert_eq!(SL.free_slabs(8), Err(7), "All slabs should've been removed");
         SL.sanity_check(false);
         drop(b);
+        SL.sanitize();
         assert_eq!(SL.free_slabs(1), Ok(1), "All slabs should've been removed");
     }
 
