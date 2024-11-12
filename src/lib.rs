@@ -196,7 +196,8 @@ where
 
         let mut count = 1;
 
-        let mut hit_cursor = false;
+        let mut hit_cursor =
+            core::ptr::addr_eq(slab, lr.cursor.expect("Cursor must be set").as_ptr());
 
         loop {
             match slab.next_slab() {
