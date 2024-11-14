@@ -579,6 +579,73 @@ where
     }
 }
 
+struct SlabCursor<T: 'static, const SLAB_SIZE: usize>
+where
+    [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+    [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
+{
+    next: Option<&'static mut Slab<T, SLAB_SIZE>>,
+    forward: bool,
+}
+
+impl<T, const SLAB_SIZE: usize> SlabCursor<T, SLAB_SIZE>
+where
+    [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+    [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
+{
+    fn not_exhausted(&self) -> bool {
+        self.next.is_some()
+    }
+
+    /// Attempts to locate a slab with free space, when one is found the slab before is yielded.
+    /// If no free slab is found then the last slab in the iterator is returned
+    fn find_full_slab(&mut self) -> &'static mut Slab<T, SLAB_SIZE> {
+        while let Some(slab) = self.next() {
+            if self.forward && slab.next_slab().is_some_and(|s| s.query_free() == 0) {
+                return slab;
+            } else if slab.prev_slab().is_some_and(|s| s.query_free() == 0) {
+                return slab;
+            } else if !self.not_exhausted() {
+                // will return true when the final slab is yielded.
+                return slab; // this is the last slab in the list
+            }
+        }
+        unreachable!()
+    }
+
+    /// Attempts to locate a slab with free space, when one is found the slab before is yielded.
+    /// Calling `self.next()` after calling this will yield the full slab.
+
+    fn find_not_full(&mut self) -> Option<&'static mut Slab<T, SLAB_SIZE>> {
+        while let Some(slab) = self.next() {
+            if self.forward && slab.next_slab().is_some_and(|s| s.query_free() != 0) {
+                return Some(slab);
+            } else if slab.prev_slab().is_some_and(|s| s.query_free() != 0) {
+                return Some(slab);
+            }
+        }
+
+        None
+    }
+}
+
+impl<T: 'static, const SLAB_SIZE: usize> Iterator for SlabCursor<T, SLAB_SIZE>
+where
+    [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
+    [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
+{
+    type Item = &'static mut Slab<T, SLAB_SIZE>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let s = self.next.take()?;
+        if self.forward {
+            self.next = s.next_slab();
+        } else {
+            self.next = s.prev_slab();
+        }
+        Some(s)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
