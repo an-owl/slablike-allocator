@@ -216,7 +216,8 @@ where
 
         assert_eq!(
             count,
-            self.slab_count.load(core::sync::atomic::Ordering::Relaxed)
+            self.slab_count.load(core::sync::atomic::Ordering::Relaxed),
+            "Incorrect number of slabs"
         );
         assert!(hit_cursor);
         assert!(core::ptr::addr_eq(lr.tail.unwrap().as_ptr(), slab))
