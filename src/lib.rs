@@ -546,6 +546,10 @@ where
         slab_count_obj_elements::<T, SLAB_SIZE>() - self.slab_metadata.allocated()
     }
 
+    fn is_empty(&self) -> bool {
+        self.slab_metadata.allocated() == 0
+    }
+
     /// Determines whether the previous slab should be split off for a sanitize operation.
     ///
     /// Returns `true` when the previous slab contains free object elements.
@@ -565,6 +569,11 @@ where
         } else {
             self.prev_slab()?.sanitize_locate_end()
         }
+    }
+
+    /// Splits off the previous slab and returns a reference to it.
+    fn split_prev(&mut self) -> Option<&'static mut Self> {
+        self.set_prev(None)?.set_next(None)
     }
 }
 
