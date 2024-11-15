@@ -358,6 +358,7 @@ where
         } else {
             let tail = unsafe { &mut *self.tail.expect("Tail not initialized").as_ptr() };
             let _r = tail.set_next(Some(slab));
+            slab.set_prev(Some(tail));
             debug_assert!(_r.is_none());
             self.tail = Some(NonNull::new(slab as *mut Slab<T, SLAB_SIZE>).unwrap());
         }
