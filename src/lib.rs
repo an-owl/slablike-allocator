@@ -133,34 +133,36 @@ where
 
     fn sanitize_inner(&self) -> Option<()> {
         let mut wl = self.pointers.write();
-        let mut slab = wl.cursor.map(|p| p.as_ptr());
+        //let mut slab = wl.cursor.map(|p| p.as_ptr());
+        let mut iter = wl.iter(false);
+        while iter.not_exhausted() {
+            // hitting ? here indicates that all slabs are full
+            let split_start = iter.find_not_full()?;
+            let mut split_off_tail = core::mem::MaybeUninit::new(iter.next().unwrap()); // find* guarantees that iter.next() returns Some(_)
+            let mut split_off_head = core::mem::MaybeUninit::new(iter.find_full_slab()); // this might be the same as `split_off_start` so it is treated as volatile
+            let mut split_end = iter.next();
 
-        while let Some(s) = slab {
-            if unsafe { &mut *s }.sanitise_query_split() {
-                let new_prev = unsafe { &mut *s }.sanitize_locate_end();
-
-                let split_off_head = if let Some(new_pre) = &new_prev {
-                    new_pre.next_slab().unwrap()
-                } else {
-                    // If the entire head is split off then self.head is the split-off-head.
-                    // We need to take it and point it to slab which is now our head.
-                    let r = unsafe { &mut *wl.head.unwrap().as_ptr() };
-                    wl.head = Some(NonNull::new(*slab.as_mut().unwrap()).unwrap());
-                    r
-                };
-
-                // we append this to the tail.
-                // Inserting after the cursor might improve the cache hit rate, but its more complicated.
-                // I might test this in the future.
-                let split_off_tail = unsafe { &mut *s }.set_prev(new_prev)?;
-                let tail = unsafe { &mut *wl.tail.unwrap().as_ptr() };
-                tail.set_next(Some(split_off_head)).unwrap();
-                wl.tail = Some(NonNull::new(split_off_tail).unwrap());
-            } else {
-                slab = unsafe { &mut *s }
-                    .prev_slab()
-                    .map(|r| r as *mut Slab<T, SLAB_SIZE>)
+            // split ends are joined up.
+            if let Some(ref mut end) = split_end {
+                end.set_next(Some(split_start));
             }
+            if split_end.is_none() {
+                // SAFETY: ref cannot be non-null
+                wl.head = Some(unsafe { NonNull::new_unchecked(split_start) });
+            }
+            split_start.set_prev(split_end);
+
+            // SAFETY: We need to prevent the compiler from making assumptions
+            // both split_off*'s are initialized
+            unsafe { split_off_tail.assume_init_mut().set_next(None) };
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst); // I might be overthinking this
+                                                                                      // link split head to the tail
+            let sp_head = unsafe { split_off_head.assume_init_mut() };
+            let tail = unsafe { &mut *wl.tail.as_ref().unwrap().as_ptr() };
+            tail.set_next(Some(sp_head));
+            sp_head.set_prev(Some(tail));
+            // SAFETY: This is safe this is guaranteed to be valid its wrapped in MaybeUninit to prevent the compiler manhandling it.
+            wl.tail = Some(NonNull::new(unsafe { split_off_tail.assume_init_read() }).unwrap());
         }
 
         Some(())
