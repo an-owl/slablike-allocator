@@ -885,7 +885,7 @@ mod tests {
     fn check_shrink_random() {
         use rand::prelude::*;
         static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
-        let mut rand = rand::thread_rng();
+        let mut rand = StdRng::seed_from_u64(69);
 
         let mut buff = std::vec::Vec::new();
         for _ in 0..128 {
