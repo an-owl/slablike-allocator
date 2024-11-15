@@ -294,7 +294,7 @@ where
     }
 }
 
-impl<T, const SLAB_SIZE: usize> SlabLikePointers<T, SLAB_SIZE>
+impl<T: 'static, const SLAB_SIZE: usize> SlabLikePointers<T, SLAB_SIZE>
 where
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
     [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
@@ -361,6 +361,17 @@ where
             slab.set_prev(Some(tail));
             debug_assert!(_r.is_none());
             self.tail = Some(NonNull::new(slab as *mut Slab<T, SLAB_SIZE>).unwrap());
+        }
+    }
+
+    /// Returns an iterator over slabs starting at `self.cursor`. If `forward` is true then the
+    /// iter will yield elements ahead of the cursor else elements behind the cursor will be yielded.
+    ///
+    /// If `self.cursor` is not set then this will yield [None]
+    fn iter(&mut self, forward: bool) -> SlabCursor<T, SLAB_SIZE> {
+        SlabCursor {
+            next: self.cursor.map(|p| unsafe { &mut *p.as_ptr() }),
+            forward,
         }
     }
 }
@@ -475,7 +486,7 @@ where
     obj_elements: [core::mem::MaybeUninit<T>; slab_count_obj_elements::<T, SLAB_SIZE>()],
 }
 
-impl<T, const SLAB_SIZE: usize> Slab<T, SLAB_SIZE>
+impl<T: 'static, const SLAB_SIZE: usize> Slab<T, SLAB_SIZE>
 where
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
     [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
