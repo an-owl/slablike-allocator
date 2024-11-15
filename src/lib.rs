@@ -898,6 +898,7 @@ mod tests {
         for _ in 0..64 {
             buff.pop();
         }
+        SL.sanitize();
 
         assert_eq!(SL.free_slabs(usize::MAX), Err(64))
     }
