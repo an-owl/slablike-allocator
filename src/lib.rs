@@ -236,22 +236,19 @@ where
     #[allow(dead_code)]
     pub fn free_slabs(&self, shrink: usize) -> Result<usize, usize> {
         let mut wl = self.pointers.write();
-        let mut slab = wl
-            .cursor
-            .map(|p| unsafe { &mut *p.as_ptr() })
-            .ok_or(0usize)?;
+
         let mut count = 0;
 
-        while count < shrink {
-            if slab.query_free() == slab_count_obj_elements::<T, SLAB_SIZE>() {
-                // remove slab
-                let mut last = slab.prev_slab();
-                let mut next = slab.next_slab();
+        for i in wl.iter(true) {
+            eprint!("{:?}", i.slab_metadata.bitmap());
+            if i.is_empty() {
+                let mut last = i.prev_slab();
+                let mut next = i.next_slab();
                 if let Some(ref mut l) = last {
-                    l.set_next(slab.next_slab());
+                    l.set_next(i.next_slab());
                 }
                 if let Some(ref mut n) = next {
-                    n.set_next(slab.prev_slab());
+                    n.set_prev(i.prev_slab());
                 }
 
                 macro_rules! rm_ptr {
@@ -265,58 +262,35 @@ where
                     };
                 }
 
-                rm_ptr!(wl.cursor, slab, slab.next_slab());
-                rm_ptr!(wl.head, slab, slab.next_slab());
-                rm_ptr!(wl.tail, slab, slab.prev_slab());
+                rm_ptr!(wl.cursor, i, i.next_slab());
+                rm_ptr!(wl.head, i, i.next_slab());
+                rm_ptr!(wl.tail, i, i.prev_slab());
 
-                /*
-                match wl.cursor {
-                    Some(cursor) if core::ptr::addr_eq(cursor.as_ptr(), slab) => {
-                        // SAFETY: This is safe because it's cast from a reference which may not be null.
-                        wl.cursor = slab.next_slab().map(|p| unsafe { NonNull::new_unchecked(p) });
-                    }
-                    _ => {}
-                }
-
-                 */
-
-                if let Some(n_slab) = next {
-                    core::mem::swap(slab, n_slab);
-                    let curr_slab = n_slab;
-                    // SAFETY: NonNull::new_unchecked is safe because it's cast from a reference which may not be null.
-                    // dealloc is safe because we have removed all pointers to it.
-                    unsafe {
-                        self.alloc.deallocate(
-                            NonNull::new_unchecked(curr_slab as *mut _ as *mut u8),
-                            Layout::from_size_align(size_of::<Slab<T, SLAB_SIZE>>(), SLAB_SIZE)
-                                .unwrap(),
-                        )
-                    };
-                    count += 1;
-                    #[cfg(debug_assertions)]
-                    self.slab_count
-                        .fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
-                } else {
-                    // SAFETY: dealloc is safe because we have removed all pointers to it.
-                    unsafe {
-                        self.alloc.deallocate(
-                            NonNull::new_unchecked(slab as *mut _ as *mut u8),
-                            Layout::from_size_align(size_of::<Slab<T, SLAB_SIZE>>(), SLAB_SIZE)
-                                .unwrap(),
-                        )
-                    };
-
-                    return Err(count);
+                unsafe {
+                    self.alloc.deallocate(
+                        NonNull::new_unchecked(i).cast(),
+                        Layout::from_size_align(size_of::<Slab<T, SLAB_SIZE>>(), SLAB_SIZE)
+                            .unwrap(),
+                    )
+                };
+                count += 1;
+                #[cfg(debug_assertions)]
+                self.slab_count
+                    .fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+                eprintln!("removed {count}");
+                if count >= shrink {
+                    break;
                 }
             } else {
-                match slab.next_slab() {
-                    Some(s) => slab = s,
-                    None => return Err(count),
-                }
+                eprintln!();
             }
         }
 
-        Ok(shrink)
+        if count == shrink {
+            Ok(count)
+        } else {
+            Err(count)
+        }
     }
 }
 
