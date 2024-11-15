@@ -522,11 +522,11 @@ where
         self.slab_metadata.free(bit);
     }
 
-    fn next_slab<'a, 'b>(&'a self) -> Option<&'b mut Self> {
+    fn next_slab(&self) -> Option<&'static mut Self> {
         Some(unsafe { &mut *self.slab_metadata.next_slab()? })
     }
 
-    fn prev_slab(&self) -> Option<&mut Self> {
+    fn prev_slab(&self) -> Option<&'static mut Self> {
         Some(unsafe { &mut *self.slab_metadata.prev_slab()? })
     }
 
