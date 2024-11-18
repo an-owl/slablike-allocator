@@ -204,6 +204,11 @@ where
         self.set_bit(index, false);
         self.alloc_count.fetch_sub(1, atomic::Ordering::Release);
     }
+
+    #[cfg(debug_assertions)]
+    pub fn bitmap(&self) -> &[BitmapElement] {
+        &self.bitmap
+    }
 }
 
 const fn calc_obj_size<T>() -> usize {

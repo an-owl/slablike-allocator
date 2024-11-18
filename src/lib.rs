@@ -138,9 +138,34 @@ where
         while iter.not_exhausted() {
             // hitting ? here indicates that all slabs are full
             let split_start = iter.find_not_full()?;
+            #[cfg(all(test, feature = "debug-print"))]
+            {
+                eprintln!("split_start: {split_start:p}");
+            }
             let mut split_off_tail = core::mem::MaybeUninit::new(iter.next().unwrap()); // find* guarantees that iter.next() returns Some(_)
+            #[cfg(all(test, feature = "debug-print"))]
+            {
+                unsafe {
+                    eprintln!("split_off_tail: {:p}", split_off_tail.assume_init_read());
+                }
+            }
             let mut split_off_head = core::mem::MaybeUninit::new(iter.find_full_slab()); // this might be the same as `split_off_start` so it is treated as volatile
+            #[cfg(all(test, feature = "debug-print"))]
+            {
+                unsafe {
+                    eprintln!("split_off_head: {:p}", split_off_head.assume_init_read());
+                }
+            }
             let mut split_end = iter.next();
+            #[cfg(all(test, feature = "debug-print"))]
+            {
+                if let Some(se) = unsafe { core::ptr::read(&split_end) } {
+                    eprintln!("split_end: {se:p}");
+                }
+            }
+
+            #[cfg(all(test, feature = "debug-print"))]
+            eprintln!("-------------");
 
             // split ends are joined up.
             if let Some(ref mut end) = split_end {

@@ -3,6 +3,9 @@ name = "slablike"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+debug-print = [] # Don't use this it's intended for debugging
+
 [dependencies]
 spin = "0.9.8"
 
