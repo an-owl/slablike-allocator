@@ -206,6 +206,8 @@ where
     }
 
     #[cfg(debug_assertions)]
+    #[allow(dead_code)]
+    #[doc(hidden)]
     pub fn bitmap(&self) -> &[BitmapElement] {
         &self.bitmap
     }
