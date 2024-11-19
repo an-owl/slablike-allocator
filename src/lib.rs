@@ -832,6 +832,76 @@ mod tests {
     }
 
     #[test]
+    fn housekeeping_noisy() {
+        use rand::prelude::*;
+        static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
+
+        //let mut rand = StdRng::seed_from_u64(42069);
+        let mut rand = thread_rng();
+        let mut buff = std::vec::Vec::new();
+        for _ in 0..128 {
+            let chunk: [std::boxed::Box<u8, &SlabLike<std::alloc::Global, u8, 64>>; 32] =
+                core::array::from_fn(|_| std::boxed::Box::new_in(0u8, &SL));
+            buff.push(chunk);
+        }
+
+        buff.shuffle(&mut rand);
+
+        for _ in 0..32 {
+            buff.pop();
+        }
+        {
+            let mut wl = SL.pointers.write();
+            let it = SlabCursor {
+                next: wl.head.map(|p| unsafe { &mut *p.as_ptr() }),
+                forward: true,
+            };
+            for (i, s) in it.enumerate() {
+                eprint!("{i}: {:?} {s:p}", s.slab_metadata.bitmap());
+                if core::ptr::addr_eq(s, wl.cursor.unwrap().as_ptr()) {
+                    eprintln!(" Cursor");
+                } else {
+                    eprintln!();
+                }
+            }
+        }
+
+        eprintln!("Clean");
+        SL.sanitize();
+        SL.sanity_check(false);
+
+        {
+            let mut wl = SL.pointers.write();
+            let it = SlabCursor {
+                next: wl.head.map(|p| unsafe { &mut *p.as_ptr() }),
+                forward: true,
+            };
+            for (i, s) in it.enumerate() {
+                eprint!("{i}: {:?} {s:p}", s.slab_metadata.bitmap());
+                if core::ptr::addr_eq(s, wl.cursor.unwrap().as_ptr()) {
+                    eprintln!(" Cursor");
+                } else {
+                    eprintln!();
+                }
+            }
+
+            // Skip cursor because it may be full/partial/empty
+            for i in wl.iter(true).skip(1) {
+                assert!(i.query_free() > 0, "Found full slab ahead of cursor");
+            }
+            for (n, i) in wl.iter(false).skip(1).enumerate() {
+                eprintln!("{i:p}");
+                assert_eq!(
+                    i.query_free(),
+                    0,
+                    "Found partial slab behind of cursor: n:{n}: {i:p}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
     fn check_housekeeping_concurrent() {
         extern crate std;
         use rand::prelude::*;
