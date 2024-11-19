@@ -301,6 +301,9 @@ where
                     )
                 };
                 count += 1;
+                #[cfg(debug_assertions)]
+                self.slab_count
+                    .fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
                 if count >= shrink {
                     break;
                 }
@@ -311,6 +314,23 @@ where
             Ok(count)
         } else {
             Err(count)
+        }
+    }
+
+    #[cfg(test)]
+    fn info_dump(&self) {
+        let wl = self.pointers.write();
+        let iter = SlabCursor {
+            next: wl.head.map(|p| unsafe { &mut *p.as_ptr() }),
+            forward: true,
+        };
+
+        for (n, i) in iter.enumerate() {
+            eprint!("{n}: {:?}, {i:p}", i.slab_metadata.bitmap());
+            if core::ptr::addr_eq(i, wl.cursor.unwrap().as_ptr()) {
+                eprint!("Cursor");
+            }
+            eprintln!()
         }
     }
 }
@@ -953,6 +973,7 @@ mod tests {
         SL.extend(256).unwrap();
         SL.sanitize();
         let b = std::boxed::Box::new_in(0u8, &SL);
+        SL.info_dump();
         assert_eq!(SL.free_slabs(8), Err(7), "All slabs should've been removed");
         SL.sanity_check(false);
         drop(b);
