@@ -23,6 +23,8 @@
 //! The list can be sorted, this look back and move all slabs which aren't full ahead of the cursor.
 //! Slabs ahead of the cursor are guaranteed to have free space so these do not need to be checked.
 
+// TODO switch all the references to raw pointers
+
 mod slab_meta;
 
 use core::alloc::{AllocError, Allocator, Layout};
@@ -137,26 +139,27 @@ where
         let mut iter = wl.iter(false);
         while iter.not_exhausted() {
             // hitting ? here indicates that all slabs are full
-            let split_start = iter.find_not_full()?;
+            let (split_start, split_off_tail) = iter.find_split_tail()?;
+            let mut split_off_tail = core::mem::MaybeUninit::new(split_off_tail);
             #[cfg(all(test, feature = "debug-print"))]
             {
                 eprintln!("split_start: {split_start:p}");
             }
-            let mut split_off_tail = core::mem::MaybeUninit::new(iter.next().unwrap()); // find* guarantees that iter.next() returns Some(_)
             #[cfg(all(test, feature = "debug-print"))]
             {
                 unsafe {
                     eprintln!("split_off_tail: {:p}", split_off_tail.assume_init_read());
                 }
             }
-            let mut split_off_head = core::mem::MaybeUninit::new(iter.find_full_slab()); // this might be the same as `split_off_start` so it is treated as volatile
+
+            let (split_off_head, mut split_end) = iter.find_split_head();
+            let mut split_off_head = core::mem::MaybeUninit::new(split_off_head); // this might be the same as `split_off_start` so it is treated as volatile
             #[cfg(all(test, feature = "debug-print"))]
             {
                 unsafe {
                     eprintln!("split_off_head: {:p}", split_off_head.assume_init_read());
                 }
             }
-            let mut split_end = iter.next();
             #[cfg(all(test, feature = "debug-print"))]
             {
                 if let Some(se) = unsafe { core::ptr::read(&split_end) } {
@@ -265,7 +268,6 @@ where
         let mut count = 0;
 
         for i in wl.iter(true) {
-            eprint!("{:?}", i.slab_metadata.bitmap());
             if i.is_empty() {
                 let mut last = i.prev_slab();
                 let mut next = i.next_slab();
@@ -299,15 +301,9 @@ where
                     )
                 };
                 count += 1;
-                #[cfg(debug_assertions)]
-                self.slab_count
-                    .fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
-                eprintln!("removed {count}");
                 if count >= shrink {
                     break;
                 }
-            } else {
-                eprintln!();
             }
         }
 
@@ -574,32 +570,6 @@ where
     fn is_empty(&self) -> bool {
         self.slab_metadata.allocated() == 0
     }
-
-    /// Determines whether the previous slab should be split off for a sanitize operation.
-    ///
-    /// Returns `true` when the previous slab contains free object elements.
-    fn sanitise_query_split(&self) -> bool {
-        match self.prev_slab() {
-            Some(p_slab) => p_slab.query_free() > 0,
-            None => false,
-        }
-    }
-
-    /// Returns the slab which should be joined at the original split.
-    ///
-    /// If this returns `None` then there are no exhausted slabs remaining within the list.
-    fn sanitize_locate_end(&mut self) -> Option<&'static mut Self> {
-        if !self.sanitise_query_split() {
-            self.set_prev(None)
-        } else {
-            self.prev_slab()?.sanitize_locate_end()
-        }
-    }
-
-    /// Splits off the previous slab and returns a reference to it.
-    fn split_prev(&mut self) -> Option<&'static mut Self> {
-        self.set_prev(None)?.set_next(None)
-    }
 }
 
 struct SlabCursor<T: 'static, const SLAB_SIZE: usize>
@@ -620,35 +590,49 @@ where
         self.next.is_some()
     }
 
-    /// Attempts to locate a slab with free space, when one is found the slab before is yielded.
-    /// If no free slab is found then the last slab in the iterator is returned
-    fn find_full_slab(&mut self) -> &'static mut Slab<T, SLAB_SIZE> {
-        while let Some(slab) = self.next() {
-            if self.forward && slab.next_slab().is_some_and(|s| s.query_free() == 0) {
-                return slab;
-            } else if slab.prev_slab().is_some_and(|s| s.query_free() == 0) {
-                return slab;
-            } else if !self.not_exhausted() {
-                // will return true when the final slab is yielded.
-                return slab; // this is the last slab in the list
-            }
-        }
-        unreachable!()
-    }
-
-    /// Attempts to locate a slab with free space, when one is found the slab before is yielded.
-    /// Calling `self.next()` after calling this will yield the full slab.
-
-    fn find_not_full(&mut self) -> Option<&'static mut Slab<T, SLAB_SIZE>> {
+    /// Attempts to locate a slab with free space.
+    /// If one is found it will return the slab before the empty slab and the empty slab `Some(found_first,empty_slab)`
+    fn find_split_tail(
+        &mut self,
+    ) -> Option<(
+        &'static mut Slab<T, SLAB_SIZE>,
+        &'static mut Slab<T, SLAB_SIZE>,
+    )> {
         while let Some(slab) = self.next() {
             if self.forward && slab.next_slab().is_some_and(|s| s.query_free() != 0) {
-                return Some(slab);
+                let ns = slab.next_slab().unwrap();
+                return Some((slab, ns));
             } else if slab.prev_slab().is_some_and(|s| s.query_free() != 0) {
-                return Some(slab);
+                let ns = slab.prev_slab().unwrap();
+                return Some((slab, ns));
             }
         }
 
         None
+    }
+
+    /// Attempts to locate a slab with free space, when one is found the slab before is yielded.
+    /// If no slab is found then this will return the last slab in the list.
+    /// The caller should call [Self::peek] after calling this to get the next slab.
+    fn find_split_head(
+        &mut self,
+    ) -> (
+        &'static mut Slab<T, SLAB_SIZE>,
+        Option<&'static mut Slab<T, SLAB_SIZE>>,
+    ) {
+        while let Some(slab) = self.next() {
+            if self.forward && slab.next_slab().is_some_and(|s| s.query_free() == 0) {
+                let ns = slab.next_slab();
+                return (slab, ns);
+            } else if slab.prev_slab().is_some_and(|s| s.query_free() == 0) {
+                let ns = slab.prev_slab();
+                return (slab, ns);
+            } else if !self.not_exhausted() {
+                // will return true when the final slab is yielded.
+                return (slab, None); // this is the last slab in the list
+            }
+        }
+        unreachable!()
     }
 }
 
@@ -819,7 +803,7 @@ mod tests {
         static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
         let sl = &SL;
 
-        const ALLOC_COUNT: usize = 0x10_0000;
+        const ALLOC_COUNT: usize = 0x1_0000;
 
         let mut rng = thread_rng();
         let mut buff = std::vec::Vec::new();
