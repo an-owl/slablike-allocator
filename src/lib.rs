@@ -1028,6 +1028,7 @@ mod tests {
             flat_buff.pop();
         }
 
+        SL.sanitize();
         assert_eq!(SL.free_slabs(32), Ok(32));
         assert_eq!(
             SL.free_slabs(usize::MAX),
