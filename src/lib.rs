@@ -436,17 +436,24 @@ where
             .visitors
             .fetch_add(1, core::sync::atomic::Ordering::Acquire);
 
-        let mut rl = self.pointers.upgradeable_read();
-        let (ptr, slab, dirty) = match rl.get_usable_slab(visitors) {
-            Some((slab, dirty)) => (slab.alloc()?, slab, dirty),
+        let mut rl = self.pointers.read();
+        let (ptr, slab, dirty) = match rl.get_usable_slab(*visitors) {
+            Some((slab, dirty)) => (
+                slab.alloc()
+                    .expect("Found slabs should always have free memory"),
+                slab,
+                dirty,
+            ),
             None => {
                 let ns = self.new_slab()?;
                 let rc = ns.alloc()?;
                 // SAFETY: This is guaranteed to not be within the existing list.
-                let mut wl = rl.upgrade();
+                drop(rl);
+                let mut wl = self.pointers.write();
                 unsafe { wl.new_append(ns) };
                 let ret = (rc, unsafe { &mut *wl.tail.unwrap().as_ptr() }, true);
-                rl = wl.downgrade_to_upgradeable();
+
+                rl = wl.downgrade();
                 ret
             }
         };
