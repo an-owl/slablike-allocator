@@ -92,10 +92,6 @@ where
 
     /// Attempts to Allocate an object, returns its slab index.
     pub fn alloc(&self) -> Option<usize> {
-        while self.bitmap[0].fetch_or(1, atomic::Ordering::Acquire) | 1 == 0 {
-            core::hint::spin_loop();
-        }
-
         // Skips elements which should not be checked because they are never free.as
         //
         let first_element = Self::reserved_bits() / bmap_elem_bits!();
