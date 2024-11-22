@@ -26,6 +26,7 @@
 // TODO switch all the references to raw pointers
 
 mod slab_meta;
+mod ticket;
 
 use core::alloc::{AllocError, Allocator, Layout};
 use core::ptr::NonNull;
@@ -42,7 +43,7 @@ where
 
     // When a thread attempts to allocate memory it must increment the visitors counter.
     // If the allocation of the current cursor fails
-    visitors: core::sync::atomic::AtomicUsize,
+    gatekeeper: ticket::GateKeeper,
     #[cfg(debug_assertions)]
     slab_count: core::sync::atomic::AtomicUsize,
 
@@ -83,7 +84,7 @@ where
     pub const fn new(alloc: A) -> Self {
         Self {
             alloc,
-            visitors: core::sync::atomic::AtomicUsize::new(0),
+            gatekeeper: ticket::GateKeeper::new(),
             #[cfg(debug_assertions)]
             slab_count: core::sync::atomic::AtomicUsize::new(0),
             pointers: spin::RwLock::new(SlabLikePointers {
@@ -432,12 +433,10 @@ where
             Layout::new::<T>()
         );
 
-        let visitors = self
-            .visitors
-            .fetch_add(1, core::sync::atomic::Ordering::Acquire);
+        let ticket = self.gatekeeper.get();
 
         let mut rl = self.pointers.read();
-        let (ptr, slab, dirty) = match rl.get_usable_slab(*visitors) {
+        let (ptr, slab, dirty) = match rl.get_usable_slab(*ticket) {
             Some((slab, dirty)) => (
                 slab.alloc()
                     .expect("Found slabs should always have free memory"),
@@ -465,14 +464,12 @@ where
             core::mem::transmute::<&mut Slab<T, SLAB_SIZE>, &'static mut Slab<T, SLAB_SIZE>>(slab)
         };
 
-        if self
-            .visitors
-            .fetch_sub(1, core::sync::atomic::Ordering::Release)
-            == 1
-            && dirty
-        {
-            unsafe { rl.upgrade().advance_cursor(Some(slab)) }
-        };
+        drop(rl);
+        if dirty {
+            if let Some(mut wl) = self.pointers.try_write() {
+                unsafe { wl.advance_cursor(Some(slab)) };
+            }
+        }
 
         Ok(ptr)
     }
