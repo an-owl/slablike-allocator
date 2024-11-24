@@ -925,19 +925,18 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn check_housekeeping_concurrent() {
         extern crate std;
         use rand::prelude::*;
         const TEST_SIZE: usize = 1_0000;
         static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
         let mut threads = std::vec::Vec::new();
-        for thread in 0..1u8 {
+        for thread in 0..32u8 {
             threads.push(std::thread::spawn(move || {
                 let mut rng = StdRng::seed_from_u64(69);
                 let mut buff = std::vec::Vec::new();
                 for _ in 0..TEST_SIZE {
-                    buff.push(std::boxed::Box::new_in(thread, &SL));
+                    buff.push(std::boxed::Box::try_new_in(thread, &SL).unwrap());
                 }
 
                 let p = &*buff;
@@ -948,13 +947,9 @@ mod tests {
                     for _ in 0..TEST_SIZE / 2 {
                         assert_eq!(*buff.pop().unwrap(), thread)
                     }
-
-                    SL.sanity_check(false);
                     SL.sanitize();
-                    SL.sanity_check(false);
-
                     for _ in 0..TEST_SIZE / 2 {
-                        buff.push(std::boxed::Box::new_in(thread, &SL));
+                        buff.push(std::boxed::Box::try_new_in(thread, &SL).unwrap());
                     }
                     SL.sanity_check(false);
                 }
@@ -964,6 +959,7 @@ mod tests {
         for t in threads {
             t.join().unwrap();
         }
+        SL.sanity_check(false);
     }
 
     #[test]
