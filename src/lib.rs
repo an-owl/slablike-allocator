@@ -26,7 +26,6 @@
 // TODO switch all the references to raw pointers
 
 mod slab_meta;
-mod ticket;
 
 use core::alloc::{AllocError, Allocator, Layout};
 use core::ptr::NonNull;
@@ -43,7 +42,6 @@ where
 
     // When a thread attempts to allocate memory it must increment the visitors counter.
     // If the allocation of the current cursor fails
-    gatekeeper: ticket::GateKeeper,
     #[cfg(debug_assertions)]
     slab_count: core::sync::atomic::AtomicUsize,
 
@@ -84,7 +82,6 @@ where
     pub const fn new(alloc: A) -> Self {
         Self {
             alloc,
-            gatekeeper: ticket::GateKeeper::new(),
             #[cfg(debug_assertions)]
             slab_count: core::sync::atomic::AtomicUsize::new(0),
             pointers: spin::RwLock::new(SlabLikePointers {
@@ -341,48 +338,26 @@ where
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
     [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
 {
-    /// Updates the cursor to point to `next`.
-    /// This method should be called when `self.cursor` failed to allocate memory and the visitor count is zero.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that `next` is contained within `self`'s linked list.
-    unsafe fn advance_cursor(&mut self, next: Option<&mut Slab<T, SLAB_SIZE>>) {
-        self.cursor = next.map(|p| NonNull::new(p).unwrap());
+    /// Attempts to allocate from the cursor. On failure the cursor must be advanced.
+    fn allocate(&self) -> Result<NonNull<[u8]>, AllocError> {
+        let slab = self
+            .cursor
+            .map(|cursor| unsafe { &mut *cursor.as_ptr() })
+            .ok_or(AllocError)?;
+        slab.alloc()
     }
 
-    /// Locates a slab that the caller will allocate memory from and determines whether the cursor must be updated.
+    /// Moves the cursor to the next slab in the list.
     ///
-    /// If no slab can be found then the caller should allocate a new slab and append it to the linked list.
-    fn get_usable_slab(&self, visitor: usize) -> Option<(&mut Slab<T, SLAB_SIZE>, bool)> {
-        let slab = self.cursor.map(|p| unsafe { &mut *p.as_ptr() })?;
-
-        let slab_r = self.locate_available_slab(visitor, slab)?;
-
-        // returns good slab, checks that
-        let dirty = core::ptr::eq(slab_r, self.cursor.unwrap().as_ptr());
-        Some((slab_r, dirty))
-    }
-
-    /// Attempts to locate a slab which can be used to allocate new data from.
-    ///
-    /// If no slab can be located, then the last slab will be returned. The caller can append a new
-    /// slab to the list and call using the previously returned value
-    fn locate_available_slab<'a>(
-        &'a self,
-        mut visitors: usize,
-        mut slab: &'a mut Slab<T, SLAB_SIZE>,
-    ) -> Option<&'a mut Slab<T, SLAB_SIZE>> {
-        loop {
-            // We know how many free OEs are in each slab, so we subtract the visitor count by that until it underflows.
-            // This slab is guaranteed to have a free OE.
-            match visitors.checked_sub(slab.query_free()) {
-                Some(n) => {
-                    visitors = n;
-                    slab = slab.next_slab()?
-                }
-                None => return Some(slab),
-            }
+    /// When this returns `None` a new slab must be allocated.
+    fn advance_cursor(&mut self) -> Result<(), ()> {
+        let slab = unsafe { &mut *self.cursor.ok_or(())?.as_ptr() };
+        if let Some(slab) = slab.next_slab() {
+            // SAFETY: References cannot be null
+            self.cursor = unsafe { Some(NonNull::new_unchecked(slab)) };
+            Ok(())
+        } else {
+            Err(())
         }
     }
 
@@ -433,45 +408,27 @@ where
             Layout::new::<T>()
         );
 
-        let ticket = self.gatekeeper.get();
-
-        let mut rl = self.pointers.read();
-        let (ptr, slab, dirty) = match rl.get_usable_slab(*ticket) {
-            Some((slab, dirty)) => (
-                slab.alloc()
-                    .expect("Found slabs should always have free memory"),
-                slab,
-                dirty,
-            ),
-            None => {
-                let ns = self.new_slab()?;
-                let rc = ns.alloc()?;
-                // SAFETY: This is guaranteed to not be within the existing list.
-                drop(rl);
-                let mut wl = self.pointers.write();
-                unsafe { wl.new_append(ns) };
-                let ret = (rc, unsafe { &mut *wl.tail.unwrap().as_ptr() }, true);
-
-                rl = wl.downgrade();
-                ret
-            }
-        };
-
-        // SAFETY: This disassociates `slab`'s lifetime from `rl`.
-        // rl.upgrade() consumes `rl` but `slab` is bounded to it.
-        // `slab` is taken as mutable but is not mutated after `rl` is dropped.
-        let slab = unsafe {
-            core::mem::transmute::<&mut Slab<T, SLAB_SIZE>, &'static mut Slab<T, SLAB_SIZE>>(slab)
-        };
-
-        drop(rl);
-        if dirty {
-            if let Some(mut wl) = self.pointers.try_write() {
-                unsafe { wl.advance_cursor(Some(slab)) };
+        loop {
+            let rl = self.pointers.read();
+            if let Ok(ptr) = rl.allocate() {
+                return Ok(ptr);
+            } else {
+                // Only one thread should update the slab.
+                // This blocks further calls to read().
+                if let Some(ur) = self.pointers.try_upgradeable_read() {
+                    // Drop rl to prevent blocking while upgrading.
+                    // Dropping it after acquiring upgradeable prevents housekeeping tasks from running in this time.
+                    drop(rl);
+                    // Waits until all threads drop rl
+                    let mut wl = ur.upgrade();
+                    if wl.advance_cursor().is_err() {
+                        // SAFETY: The slab is new and cannot be within the list.
+                        // Can this be optimized to allocate the new slab before ur.upgrade()?
+                        unsafe { wl.new_append(self.new_slab()?) }
+                    }
+                }
             }
         }
-
-        Ok(ptr)
     }
 
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
