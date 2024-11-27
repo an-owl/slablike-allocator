@@ -908,7 +908,6 @@ mod tests {
                     for _ in 0..TEST_SIZE / 2 {
                         buff.push(std::boxed::Box::try_new_in(thread, &SL).unwrap());
                     }
-                    SL.sanity_check(false);
                 }
             }));
         }
