@@ -463,7 +463,7 @@ where
 ///
 /// This fn will panic if the number of object elements is 0.
 pub const fn slab_count_obj_elements<T, const SLAB_SIZE: usize>() -> usize {
-    let elem_size = size_of::<[T; 2]>() / 2;
+    let elem_size = size_of::<[T; 2]>() / 2; // Gets the size of a single element; accounting for padding.
     let raw_obj_elem_count = SLAB_SIZE / elem_size;
 
     let meta_size = slab_meta::size_of_meta::<T>(SLAB_SIZE);
@@ -651,6 +651,7 @@ mod tests {
 
     #[test]
     fn check_slab_geom_size() {
+        let oe = slab_count_obj_elements::<u8, 64>();
         assert_eq!(size_of::<Slab<u8, 64>>(), 64);
         assert_eq!(size_of::<Slab<u8, 128>>(), 128);
         assert_eq!(size_of::<Slab<u128, 128>>(), 128);

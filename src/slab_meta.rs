@@ -1,7 +1,7 @@
 use super::Slab;
 use core::sync::atomic;
 
-type BitmapElement = atomic::AtomicU8;
+type BitmapElement = atomic::AtomicU64;
 
 macro_rules! bmap_elem_bits {
     () => {
@@ -9,6 +9,7 @@ macro_rules! bmap_elem_bits {
     };
 }
 
+/// Returns the number ob [BitmapElement]'s in the metadata bitmap.
 pub const fn meta_bitmap_size<T>(slab_size: usize) -> usize {
     assert!(slab_size >= size_of::<T>() * 2);
     (slab_size / size_of::<T>()).div_ceil(size_of::<BitmapElement>() * 8)
@@ -21,7 +22,7 @@ pub const fn meta_bitmap_size<T>(slab_size: usize) -> usize {
 /// resolve another const bound. This prevents needing to resolve `size_of<SlabMetadata<T,_>`.
 pub(crate) const fn size_of_meta<T>(slab_size: usize) -> usize {
     const META_ALIGN: usize = 8;
-    let size = (META_ALIGN * 3) + meta_bitmap_size::<T>(slab_size);
+    let size = (META_ALIGN * 3) + (meta_bitmap_size::<T>(slab_size) * size_of::<BitmapElement>());
 
     let t = if size & META_ALIGN - 1 != 0 {
         (size & !(META_ALIGN - 1)) + META_ALIGN
@@ -318,8 +319,10 @@ mod tests {
     fn test_meta_bitmap_size() {
         assert_eq!(meta_bitmap_size::<u8>(2), 1);
         assert_eq!(meta_bitmap_size::<u8>(8), 1);
-        assert_eq!(meta_bitmap_size::<u8>(16), 2);
-        assert_eq!(meta_bitmap_size::<u8>(32), 4);
+        assert_eq!(meta_bitmap_size::<u8>(16), 1);
+        assert_eq!(meta_bitmap_size::<u8>(32), 1);
+        assert_eq!(meta_bitmap_size::<u8>(128), 2);
+        assert_eq!(meta_bitmap_size::<u8>(256), 4);
         assert_eq!(meta_bitmap_size::<u64>(16), 1);
     }
 
