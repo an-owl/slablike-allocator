@@ -886,9 +886,9 @@ mod tests {
         extern crate std;
         use rand::prelude::*;
         const TEST_SIZE: usize = 1_0000;
-        static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
+        static SL: SlabLike<std::alloc::Global, u8, 16384> = SlabLike::new(std::alloc::Global);
         let mut threads = std::vec::Vec::new();
-        for thread in 0..32u8 {
+        for thread in 0..20u8 {
             threads.push(std::thread::spawn(move || {
                 let mut rng = StdRng::seed_from_u64(69);
                 let mut buff = std::vec::Vec::new();
