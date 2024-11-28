@@ -324,7 +324,7 @@ where
         };
 
         for (n, i) in iter.enumerate() {
-            eprint!("{n}: {:?}, {i:p}", i.slab_metadata.bitmap());
+            eprint!("{n}: {:x?}, {i:p}", i.slab_metadata.bitmap());
             if core::ptr::addr_eq(i, wl.cursor.unwrap().as_ptr()) {
                 eprint!("Cursor");
             }
@@ -545,11 +545,11 @@ where
 
     /// Returns the number of free object elements in `self`
     fn query_free(&self) -> usize {
-        slab_count_obj_elements::<T, SLAB_SIZE>() - self.slab_metadata.allocated()
+        self.slab_metadata.count_free()
     }
 
     fn is_empty(&self) -> bool {
-        self.slab_metadata.allocated() == 0
+        self.slab_metadata.count_free() == slab_count_obj_elements::<T, SLAB_SIZE>()
     }
 }
 
@@ -643,7 +643,7 @@ mod tests {
     fn check_slab_obj_count() {
         let slab = Slab::<u16, 64>::new();
         //assert_eq!(core::mem::size_of::<Slab<u128, 64>>(), 64);
-        assert_eq!(slab.obj_elements.len(), 16);
+        assert_eq!(slab.obj_elements.len(), 20);
         let slab = Slab::<u128, 64>::new();
         assert_eq!(core::mem::size_of::<Slab<u128, 64>>(), 64);
         assert_eq!(slab.obj_elements.len(), 2);
@@ -661,7 +661,7 @@ mod tests {
     #[test]
     fn obj_elem_count() {
         assert_eq!(slab_count_obj_elements::<u128, 64>(), 2);
-        assert_eq!(slab_count_obj_elements::<u16, 64>(), 16);
+        assert_eq!(slab_count_obj_elements::<u16, 64>(), 20);
     }
 
     #[test]
@@ -687,12 +687,12 @@ mod tests {
         let mut slab = Slab::<u16, 4096>::new();
         let slab_addr = &slab as *const _ as usize;
         let base = &slab as *const _ as usize;
-        for i in 0..1776 {
+        for i in 0..1780 {
             // 1776 is expected number of obj-elements
             let ptr = slab.alloc().unwrap().cast::<u8>().as_ptr() as usize;
             assert_eq!(
                 ptr,
-                base + 280 + (2 * i),
+                base + 272 + (2 * i),
                 "Iteration {i}, base {base:#x}, meta_end {:#x}",
                 base + 272
             );
@@ -923,12 +923,12 @@ mod tests {
     fn check_shrink_simple() {
         static SL: SlabLike<std::alloc::Global, u8, 64> = SlabLike::new(std::alloc::Global);
 
-        SL.extend(256).unwrap();
+        SL.extend(320).unwrap();
         SL.sanitize();
         SL.sanity_check(false);
         assert_eq!(SL.free_slabs(8), Ok(8), "All slabs should've been removed");
         SL.sanity_check(true);
-        SL.extend(256).unwrap();
+        SL.extend(320).unwrap();
         SL.sanitize();
         let b = std::boxed::Box::new_in(0u8, &SL);
         SL.info_dump();
@@ -947,7 +947,7 @@ mod tests {
 
         let mut buff = std::vec::Vec::new();
         for _ in 0..128 {
-            let chunk: [std::boxed::Box<u8, &SlabLike<std::alloc::Global, u8, 64>>; 32] =
+            let chunk: [std::boxed::Box<u8, &SlabLike<std::alloc::Global, u8, 64>>; 40] =
                 core::array::from_fn(|_| std::boxed::Box::new_in(0u8, &SL));
             buff.push(chunk);
         }
@@ -969,7 +969,7 @@ mod tests {
 
         let mut buff = std::vec::Vec::new();
         for _ in 0..128 {
-            let chunk: [std::boxed::Box<u8, &SlabLike<std::alloc::Global, u8, 64>>; 32] =
+            let chunk: [std::boxed::Box<u8, &SlabLike<std::alloc::Global, u8, 64>>; 40] =
                 core::array::from_fn(|_| std::boxed::Box::new_in(0u8, &SL));
             buff.push(chunk);
         }
@@ -981,7 +981,7 @@ mod tests {
 
         let mut flat_buff = buff.into_iter().flatten().collect::<Vec<_>>();
         flat_buff.shuffle(&mut rand);
-        for _ in 0..1536 {
+        for _ in 0..1920 {
             // that's half of the remaining size
             flat_buff.pop();
         }
