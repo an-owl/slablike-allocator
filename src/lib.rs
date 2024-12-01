@@ -5,7 +5,7 @@
 
 //! The slab-like allocator works using a method inspired by a SLAB allocator.
 //! It uses regions of memory of `SLAB_SIZE` bytes divided up into object elements.
-//! Each region (slab) is located using a self-contained doubly-linked list. The head contains a
+//! Each region (slab) is located using a doubly-linked list. The head contains a
 //! pointer to the first and last slab, as a doubly linked list normally would.
 //! However, it also maintains a cursor into a slab which will be used to allocate memory from next.
 //!
@@ -22,6 +22,44 @@
 //!
 //! The list can be sorted, this look back and move all slabs which aren't full ahead of the cursor.
 //! Slabs ahead of the cursor are guaranteed to have free space so these do not need to be checked.
+//!
+//! # Complexity
+//!
+//! ## Time
+//!
+//! The allocator works in two stages. The first locates a slab to allocate memory from,
+//! the second locates an OE to allocate from. During the first stage only the slab pointed at by
+//! the cursor can be used. If this slab has no free space then all threads must be synced and the
+//! cursor updated and then threads can retry.
+//!
+//! The second stage looks through the slab bitmap and attempts to locate a free bit.
+//! When it does it attempts to set the bit to one, however another thread may have set this bit and
+//! so this thread may need to retry.
+//!
+//! Time complexities are relatively complicated to calculate for this algorithm.
+//! Ignoring allocator misses (when `A::allocate()` must be called) then the best case time complexity is
+//! `O=t (SLAB_SIZE/size_of::<T>())`, `t` being the number of threads currently trying to allocate.
+//!
+//! Performance can be increased by increasing the slab size. This reduces the frequency that a
+//! slab is exhausted and prevents threads from needing to be synchronized. Larger slabs however may
+//! take more operations to locate a free object entry.
+//!
+//! Calling [SlabLike::deallocate] is always `O=1`
+//!
+//! ## Space
+//!
+//! Each slab contains `(SLAB_SIZE/size_of::<T>())` object entries. However, some of these are
+//! reserved for the metadata struct. This struct contains pointers to the next and previous slabs and a bitmap.
+//! There is a bit for each object element, including the ones storing the metadata.
+//! The size complexity of each slab is `O=(SLAB_SIZE/size_of<T>()) + 1`.
+//!
+//! # Safety
+//!
+//! Currently, this crate contains unsound code and relies on in incomplete features. Tests are included to check that the `generic_const_exprs` feature is working correctly.
+//!
+//! Calling [SlabLike] is only guaranteed to allocate `T`. A debug assertion will check that `layout`
+//! the layout of `T` are the same. With `debug_assertions` disabled or in release builds this check
+//! does not occur and allocating anything besides a `T` may result in UB.
 
 // TODO switch all the references to raw pointers
 
@@ -33,6 +71,7 @@ use slab_meta::SlabMetadata;
 
 pub use slab_meta::meta_bitmap_size;
 
+/// See crate level documentation
 pub struct SlabLike<A: core::alloc::Allocator, T, const SLAB_SIZE: usize>
 where
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
@@ -107,6 +146,7 @@ where
         Ok(n_slab)
     }
 
+    /// Counts slabs by iterating over them. Runs in `O=N` Time
     pub fn count_slabs(&self) -> usize {
         let lr = self.pointers.read();
         let mut slab = if let Some(n) = lr.head {
@@ -127,6 +167,7 @@ where
         }
     }
 
+    /// Cleans the linked list, moving all not-full slabs ahead of the cursor.
     pub fn sanitize(&self) {
         self.sanitize_inner();
     }
@@ -259,7 +300,6 @@ where
     /// This fn will return `Err(0)` if the cursor is not set.
     ///
     /// This method blocks allocation.
-    #[allow(dead_code)]
     pub fn free_slabs(&self, shrink: usize) -> Result<usize, usize> {
         let mut wl = self.pointers.write();
 
