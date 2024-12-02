@@ -71,6 +71,32 @@ use slab_meta::SlabMetadata;
 
 pub use slab_meta::meta_bitmap_size;
 
+/// Provides syntax sugar for calling a method on a raw pointer.
+///
+/// This macro has two optional arguments `unsafe` and `mut`
+///
+/// * `unsafe` places the call within an unsafe block
+/// * `mut` dereferences the object into a mutable reference.
+///
+/// # Safety
+///
+/// This is unsafe because it dereferences a raw pointer. See [core::ptr] for details
+macro_rules! ptr_call {
+    (unsafe $obj:ident . $method:ident  ($($args:expr),*) ) => {
+        unsafe {(& *$obj) . $method ( $($args),* )}
+    };
+    (unsafe mut $obj:ident . $method:ident  ($($args:expr),*) ) => {
+        unsafe {(& mut *$obj) . $method ( $($args),* )}
+    };
+
+    ($obj:ident . $method:ident  ($($args:expr),*)) => {
+        {(& *$obj) . $method ( $($args),* )}
+    };
+    (mut $obj:ident . $method:ident  ($($args:expr),*)) => {
+        {(& mut *$obj) . $method ( $($args),* )}
+    };
+}
+
 /// See crate level documentation
 pub struct SlabLike<A: core::alloc::Allocator, T, const SLAB_SIZE: usize>
 where
@@ -138,7 +164,9 @@ where
         let slab_ptr = ptr?.cast();
 
         unsafe { slab_ptr.write(Slab::<T, SLAB_SIZE>::new()) };
-        let n_slab: &mut Slab<T, SLAB_SIZE> = unsafe { &mut *ptr?.as_ptr().cast() };
+
+        // SAFETY: deref is safe because slab is initialized above, and we are sole owner of the mutable reference
+        let n_slab: &mut Slab<T, SLAB_SIZE> = unsafe { &mut *slab_ptr.as_ptr() };
         #[cfg(debug_assertions)]
         self.slab_count
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -150,7 +178,7 @@ where
     pub fn count_slabs(&self) -> usize {
         let lr = self.pointers.read();
         let mut slab = if let Some(n) = lr.head {
-            unsafe { &*n.as_ptr() }
+            n.as_ptr()
         } else {
             debug_assert!(lr.tail.is_none());
             debug_assert!(lr.cursor.is_none());
@@ -159,7 +187,7 @@ where
 
         let mut count = 1;
         loop {
-            match slab.next_slab() {
+            match ptr_call!(unsafe slab.next_slab()) {
                 Some(p) => slab = p,
                 None => return count,
             }
@@ -179,7 +207,7 @@ where
         while iter.not_exhausted() {
             // hitting ? here indicates that all slabs are full
             let (split_start, split_off_tail) = iter.find_split_tail()?;
-            let mut split_off_tail = core::mem::MaybeUninit::new(split_off_tail);
+            let split_off_tail = split_off_tail;
             #[cfg(all(test, feature = "debug-print"))]
             {
                 eprintln!("split_start: {split_start:p}");
@@ -191,8 +219,8 @@ where
                 }
             }
 
-            let (split_off_head, mut split_end) = iter.find_split_head();
-            let mut split_off_head = core::mem::MaybeUninit::new(split_off_head); // this might be the same as `split_off_start` so it is treated as volatile
+            let (split_off_head, split_end) = iter.find_split_head();
+            let split_off_head = split_off_head; // this might be the same as `split_off_start` so it is treated as volatile
             #[cfg(all(test, feature = "debug-print"))]
             {
                 unsafe {
@@ -210,26 +238,25 @@ where
             eprintln!("-------------");
 
             // split ends are joined up.
-            if let Some(ref mut end) = split_end {
-                end.set_next(Some(split_start));
+            if let Some(end) = split_end {
+                ptr_call!(unsafe end.set_next(Some(split_start)));
             }
             if split_end.is_none() {
                 // SAFETY: ref cannot be non-null
                 wl.head = Some(unsafe { NonNull::new_unchecked(split_start) });
             }
-            split_start.set_prev(split_end);
+            ptr_call!(unsafe split_start.set_prev(split_end));
 
             // SAFETY: We need to prevent the compiler from making assumptions
             // both split_off*'s are initialized
-            unsafe { split_off_tail.assume_init_mut().set_next(None) };
+            ptr_call!(unsafe mut split_off_tail.set_next(None));
             core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst); // I might be overthinking this
                                                                                       // link split head to the tail
-            let sp_head = unsafe { split_off_head.assume_init_mut() };
-            let tail = unsafe { &mut *wl.tail.as_ref().unwrap().as_ptr() };
-            tail.set_next(Some(sp_head));
-            sp_head.set_prev(Some(tail));
+            let tail = wl.tail.as_ref().unwrap().as_ptr();
+            ptr_call!(unsafe tail.set_next(Some(split_off_head)));
+            ptr_call!(unsafe split_off_head.set_prev(Some(tail)));
             // SAFETY: This is safe this is guaranteed to be valid its wrapped in MaybeUninit to prevent the compiler manhandling it.
-            wl.tail = Some(NonNull::new(unsafe { split_off_tail.assume_init_read() }).unwrap());
+            wl.tail = Some(NonNull::new(split_off_tail).unwrap());
         }
 
         Some(())
@@ -252,6 +279,13 @@ where
 
     #[cfg(debug_assertions)]
     #[allow(dead_code)]
+    /// Performs a sanity check ensuring the following things
+    ///
+    /// * That the number of slabs in the list is what is expected.
+    /// * That the cursor points to a slab within the list
+    /// * That the last slab is pointed at bt `self.tail`
+    ///
+    /// Contains unsound code, I don't really care though because this is here for testing.
     fn sanity_check(&self, maybe_empty: bool) {
         let lr = self.pointers.read();
         let mut slab = if let Some(n) = lr.head {
@@ -275,7 +309,7 @@ where
                         hit_cursor = true;
                     }
                     count += 1;
-                    slab = p
+                    slab = unsafe { &mut *p }
                 }
                 None => break,
             }
@@ -306,14 +340,14 @@ where
         let mut count = 0;
 
         for i in wl.iter(true) {
-            if i.is_empty() {
-                let mut last = i.prev_slab();
-                let mut next = i.next_slab();
-                if let Some(ref mut l) = last {
-                    l.set_next(i.next_slab());
+            if ptr_call!(unsafe i.is_empty()) {
+                let last = ptr_call!(unsafe i.prev_slab());
+                let next = ptr_call!(unsafe i.next_slab());
+                if let Some(l) = last {
+                    ptr_call!(unsafe l.set_next(ptr_call!(i.next_slab())));
                 }
-                if let Some(ref mut n) = next {
-                    n.set_prev(i.prev_slab());
+                if let Some(n) = next {
+                    ptr_call!(unsafe n.set_prev(ptr_call!(i.prev_slab())));
                 }
 
                 macro_rules! rm_ptr {
@@ -327,9 +361,9 @@ where
                     };
                 }
 
-                rm_ptr!(wl.cursor, i, i.next_slab());
-                rm_ptr!(wl.head, i, i.next_slab());
-                rm_ptr!(wl.tail, i, i.prev_slab());
+                rm_ptr!(wl.cursor, i, ptr_call!(unsafe i.next_slab()));
+                rm_ptr!(wl.head, i, ptr_call!(unsafe i.next_slab()));
+                rm_ptr!(wl.tail, i, ptr_call!(unsafe i.prev_slab()));
 
                 unsafe {
                     self.alloc.deallocate(
@@ -359,12 +393,14 @@ where
     fn info_dump(&self) {
         let wl = self.pointers.write();
         let iter = SlabCursor {
-            next: wl.head.map(|p| unsafe { &mut *p.as_ptr() }),
+            next: wl.head.map(|p| p.as_ptr()),
             forward: true,
         };
 
         for (n, i) in iter.enumerate() {
-            eprint!("{n}: {:x?}, {i:p}", i.slab_metadata.bitmap());
+            eprint!("{n}: {:x?}, {i:p}", unsafe {
+                (&mut *i).slab_metadata.bitmap()
+            });
             if core::ptr::addr_eq(i, wl.cursor.unwrap().as_ptr()) {
                 eprint!("Cursor");
             }
@@ -427,7 +463,7 @@ where
     /// If `self.cursor` is not set then this will yield [None]
     fn iter(&mut self, forward: bool) -> SlabCursor<T, SLAB_SIZE> {
         SlabCursor {
-            next: self.cursor.map(|p| unsafe { &mut *p.as_ptr() }),
+            next: self.cursor.map(|p| p.as_ptr()),
             forward,
         }
     }
@@ -564,23 +600,19 @@ where
         self.slab_metadata.free(bit);
     }
 
-    fn next_slab(&self) -> Option<&'static mut Self> {
-        Some(unsafe { &mut *self.slab_metadata.next_slab()? })
+    fn next_slab(&self) -> Option<*mut Self> {
+        Some(self.slab_metadata.next_slab()?)
     }
 
-    fn prev_slab(&self) -> Option<&'static mut Self> {
-        Some(unsafe { &mut *self.slab_metadata.prev_slab()? })
+    fn prev_slab(&self) -> Option<*mut Self> {
+        Some(self.slab_metadata.prev_slab()?)
     }
 
-    fn set_next(&self, slab: Option<&mut Self>) -> Option<&'static mut Self> {
-        self.slab_metadata
-            .set_next(slab.map(|p| p as *mut _))
-            .map(|p| unsafe { &mut *p })
+    fn set_next(&self, slab: Option<*mut Self>) -> Option<*mut Self> {
+        self.slab_metadata.set_next(slab)
     }
-    fn set_prev(&self, slab: Option<&mut Self>) -> Option<&'static mut Self> {
-        self.slab_metadata
-            .set_prev(slab.map(|p| p as *mut _))
-            .map(|p| unsafe { &mut *p })
+    fn set_prev(&self, slab: Option<*mut Self>) -> Option<*mut Self> {
+        self.slab_metadata.set_prev(slab)
     }
 
     /// Returns the number of free object elements in `self`
@@ -598,7 +630,7 @@ where
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
     [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
 {
-    next: Option<&'static mut Slab<T, SLAB_SIZE>>,
+    next: Option<*mut Slab<T, SLAB_SIZE>>,
     forward: bool,
 }
 
@@ -613,18 +645,18 @@ where
 
     /// Attempts to locate a slab with free space.
     /// If one is found it will return the slab before the empty slab and the empty slab `Some(found_first,empty_slab)`
-    fn find_split_tail(
-        &mut self,
-    ) -> Option<(
-        &'static mut Slab<T, SLAB_SIZE>,
-        &'static mut Slab<T, SLAB_SIZE>,
-    )> {
+    fn find_split_tail(&mut self) -> Option<(*mut Slab<T, SLAB_SIZE>, *mut Slab<T, SLAB_SIZE>)> {
         while let Some(slab) = self.next() {
-            if self.forward && slab.next_slab().is_some_and(|s| s.query_free() != 0) {
-                let ns = slab.next_slab().unwrap();
+            if self.forward
+                && ptr_call!(unsafe slab.next_slab())
+                    .is_some_and(|s| ptr_call!(unsafe s.query_free()) != 0)
+            {
+                let ns = ptr_call!(unsafe slab.next_slab()).unwrap();
                 return Some((slab, ns));
-            } else if slab.prev_slab().is_some_and(|s| s.query_free() != 0) {
-                let ns = slab.prev_slab().unwrap();
+            } else if ptr_call!(unsafe slab.prev_slab())
+                .is_some_and(|s| ptr_call!(unsafe s.query_free()) != 0)
+            {
+                let ns = ptr_call!(unsafe slab.prev_slab()).unwrap();
                 return Some((slab, ns));
             }
         }
@@ -635,18 +667,18 @@ where
     /// Attempts to locate a slab with free space, when one is found the slab before is yielded.
     /// If no slab is found then this will return the last slab in the list.
     /// The caller should call [Self::peek] after calling this to get the next slab.
-    fn find_split_head(
-        &mut self,
-    ) -> (
-        &'static mut Slab<T, SLAB_SIZE>,
-        Option<&'static mut Slab<T, SLAB_SIZE>>,
-    ) {
+    fn find_split_head(&mut self) -> (*mut Slab<T, SLAB_SIZE>, Option<*mut Slab<T, SLAB_SIZE>>) {
         while let Some(slab) = self.next() {
-            if self.forward && slab.next_slab().is_some_and(|s| s.query_free() == 0) {
-                let ns = slab.next_slab();
+            if self.forward
+                && ptr_call!(unsafe slab.next_slab())
+                    .is_some_and(|s| ptr_call!(unsafe s.query_free()) == 0)
+            {
+                let ns = ptr_call!(unsafe slab.next_slab());
                 return (slab, ns);
-            } else if slab.prev_slab().is_some_and(|s| s.query_free() == 0) {
-                let ns = slab.prev_slab();
+            } else if ptr_call!(unsafe slab.prev_slab())
+                .is_some_and(|s| ptr_call!(unsafe s.query_free()) == 0)
+            {
+                let ns = ptr_call!(unsafe slab.prev_slab());
                 return (slab, ns);
             } else if !self.not_exhausted() {
                 // will return true when the final slab is yielded.
@@ -662,13 +694,13 @@ where
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
     [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
 {
-    type Item = &'static mut Slab<T, SLAB_SIZE>;
+    type Item = *mut Slab<T, SLAB_SIZE>;
     fn next(&mut self) -> Option<Self::Item> {
         let s = self.next.take()?;
         if self.forward {
-            self.next = s.next_slab();
+            self.next = ptr_call!(unsafe s.next_slab());
         } else {
-            self.next = s.prev_slab();
+            self.next = ptr_call!(unsafe s.prev_slab());
         }
         Some(s)
     }
@@ -875,11 +907,13 @@ mod tests {
         {
             let mut wl = SL.pointers.write();
             let it = SlabCursor {
-                next: wl.head.map(|p| unsafe { &mut *p.as_ptr() }),
+                next: wl.head.map(|p| p.as_ptr()),
                 forward: true,
             };
             for (i, s) in it.enumerate() {
-                eprint!("{i}: {:?} {s:p}", s.slab_metadata.bitmap());
+                eprint!("{i}: {:?} {s:p}", unsafe {
+                    (&mut *s).slab_metadata.bitmap()
+                });
                 if core::ptr::addr_eq(s, wl.cursor.unwrap().as_ptr()) {
                     eprintln!(" Cursor");
                 } else {
@@ -895,11 +929,13 @@ mod tests {
         {
             let mut wl = SL.pointers.write();
             let it = SlabCursor {
-                next: wl.head.map(|p| unsafe { &mut *p.as_ptr() }),
+                next: wl.head.map(|p| p.as_ptr()),
                 forward: true,
             };
             for (i, s) in it.enumerate() {
-                eprint!("{i}: {:?} {s:p}", s.slab_metadata.bitmap());
+                eprint!("{i}: {:?} {s:p}", unsafe {
+                    (&mut *s).slab_metadata.bitmap()
+                });
                 if core::ptr::addr_eq(s, wl.cursor.unwrap().as_ptr()) {
                     eprintln!(" Cursor");
                 } else {
@@ -909,12 +945,15 @@ mod tests {
 
             // Skip cursor because it may be full/partial/empty
             for i in wl.iter(true).skip(1) {
-                assert!(i.query_free() > 0, "Found full slab ahead of cursor");
+                assert!(
+                    ptr_call!(unsafe i.query_free()) > 0,
+                    "Found full slab ahead of cursor"
+                );
             }
             for (n, i) in wl.iter(false).skip(1).enumerate() {
                 eprintln!("{i:p}");
                 assert_eq!(
-                    i.query_free(),
+                    ptr_call!(unsafe i.query_free()),
                     0,
                     "Found partial slab behind of cursor: n:{n}: {i:p}"
                 );
