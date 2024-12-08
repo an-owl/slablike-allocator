@@ -55,13 +55,12 @@
 //!
 //! # Safety
 //!
-//! Currently, this crate contains unsound code and relies on in incomplete features. Tests are included to check that the `generic_const_exprs` feature is working correctly.
+//! Currently, this crate contains unsound code and relies on in incomplete features.
+//! Tests are included to check that the `generic_const_exprs` feature is working correctly.
 //!
 //! Calling [SlabLike] is only guaranteed to allocate `T`. A debug assertion will check that `layout`
-//! the layout of `T` are the same. With `debug_assertions` disabled or in release builds this check
+//! and the layout of `T` are the same. With `debug_assertions` disabled or in release builds this check
 //! does not occur and allocating anything besides a `T` may result in UB.
-
-// TODO switch all the references to raw pointers
 
 mod slab_meta;
 
