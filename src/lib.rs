@@ -101,6 +101,7 @@ pub struct SlabLike<A: core::alloc::Allocator, T, const SLAB_SIZE: usize>
 where
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
     [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
+    [(); wf_bool(SLAB_SIZE.is_power_of_two())]:,
 {
     alloc: A,
 
@@ -117,6 +118,7 @@ where
     A: Send,
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
     [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
+    [(); wf_bool(SLAB_SIZE.is_power_of_two())]:,
 {
 }
 unsafe impl<A: Allocator, T, const SLAB_SIZE: usize> Sync for SlabLike<A, T, SLAB_SIZE>
@@ -124,6 +126,7 @@ where
     A: Sync,
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
     [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
+    [(); wf_bool(SLAB_SIZE.is_power_of_two())]:,
 {
 }
 
@@ -138,10 +141,19 @@ where
     cursor: Option<NonNull<Slab<T, SLAB_SIZE>>>,
 }
 
+pub const fn wf_bool(b: bool) -> usize {
+    if b {
+        1
+    } else {
+        panic!("wf assertion failed")
+    }
+}
+
 impl<A: core::alloc::Allocator, T: 'static, const SLAB_SIZE: usize> SlabLike<A, T, SLAB_SIZE>
 where
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
     [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
+    [(); wf_bool(SLAB_SIZE.is_power_of_two())]:,
 {
     pub const fn new(alloc: A) -> Self {
         Self {
@@ -473,6 +485,7 @@ unsafe impl<A: core::alloc::Allocator, T: 'static, const SLAB_SIZE: usize> core:
 where
     [(); meta_bitmap_size::<T>(SLAB_SIZE)]:,
     [(); slab_count_obj_elements::<T, SLAB_SIZE>()]:,
+    [(); wf_bool(SLAB_SIZE.is_power_of_two())]:,
 {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         debug_assert_eq!(
